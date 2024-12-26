@@ -1,0 +1,8 @@
+[package]
+name = "nethuns-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.95"
+parking_lot = "0.12.3"
