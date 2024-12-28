@@ -4,5 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+netmap-rs = { path = "../netmap-rs" }
 anyhow = "1.0.95"
 parking_lot = "0.12.3"
+ringbuf = "0.4.7"
+circular-buffer = "0.1.9"
