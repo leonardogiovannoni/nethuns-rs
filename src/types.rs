@@ -1,3 +1,5 @@
+use std::path::Display;
+
 
 
 pub enum CaptureDir {
@@ -18,6 +20,17 @@ pub enum SocketMode {
     RxTx,
     RxOnly,
     TxOnly,
+}
+
+
+impl Display for SocketMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            SocketMode::RxTx => write!(f, ""),
+            SocketMode::RxOnly => write!(f, "/R"),
+            SocketMode::TxOnly => write!(f, "/T"),
+        }
+    }
 }
 
 

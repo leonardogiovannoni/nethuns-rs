@@ -23,12 +23,13 @@ pub enum Filter<P: PkthdrTrait> {
 pub struct InnerSocket<P: PkthdrTrait> {
     pub opt: SocketOptions,
     // todo : Producer<P>
-    pub tx_ring: Option<NethunsRing<P>>,
-    // todo : Consumer<P>
-    pub rx_ring: Option<NethunsRing<P>>,
-    // pub devname: String,
-    // pub queue: i32,
-    // pub ifindex: i32,
+    //pub tx_ring: Option<NethunsRing<P>>,
+    //// todo : Consumer<P>
+    //pub rx_ring: Option<NethunsRing<P>>,
+    pub available_rings: Rings<P>,
+    pub devname: String,
+    pub queue: Option<usize>,
+    pub ifindex: i32,
     pub filter: Filter<P>,
 }
 
