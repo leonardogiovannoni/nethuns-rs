@@ -2,6 +2,7 @@
 mod netmap;
 mod socket;
 mod types;
+mod circular_queue;
 use anyhow::Result;
 use netmap::{Socket, NetmapPkthdr, NetmapSocket, PkthdrTrait};
 use parking_lot::Mutex;

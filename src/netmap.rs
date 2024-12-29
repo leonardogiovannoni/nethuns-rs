@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 
-use crate::socket::{Filter, InnerSocket, NethunsRing};
+use crate::socket::{Filter, InnerSocket, NethunsRing, RingSlot, RING_SLOT_IN_USE};
 use crate::types::{SocketMode, SocketOptions};
-use anyhow::Result;
+use anyhow::{bail, Result};
 use netmap_rs::port::Port;
 pub trait PkthdrTrait {}
 pub struct NetmapPkthdr {
@@ -17,6 +17,8 @@ impl PkthdrTrait for NetmapPkthdr {}
 pub trait Socket: Sized {
     type Pkthdr: PkthdrTrait;
     fn create(dev: &str, opt: SocketOptions, queue: Option<usize>) -> Result<Self>;
+    fn send(&mut self, packet: &[u8]) -> Result<()>;
+    fn flush(&mut self) -> Result<()>;
 }
 
 /*
@@ -58,6 +60,41 @@ pub enum Rings<P: PkthdrTrait> {
     TxOnly(NethunsRing<P>),
     RxTx(NethunsRing<P>, NethunsRing<P>),
 }
+
+impl<P: PkthdrTrait> Rings<P> {
+    fn tx_ring(&self) -> Result<&NethunsRing<P>> {
+        match self {
+            Rings::TxOnly(tx_ring) => Ok(tx_ring),
+            Rings::RxTx(_, tx_ring) => Ok(tx_ring),
+            _ => Err(anyhow::anyhow!("Not a TxOnly ring")),
+        }
+    }
+
+    fn rx_ring(&self) -> Result<&NethunsRing<P>> {
+        match self {
+            Rings::RxOnly(rx_ring) => Ok(rx_ring),
+            Rings::RxTx(rx_ring, _) => Ok(rx_ring),
+            _ => Err(anyhow::anyhow!("Not a RxOnly ring")),
+        }
+    }
+
+    fn tx_ring_mut(&mut self) -> Result<&mut NethunsRing<P>> {
+        match self {
+            Rings::TxOnly(tx_ring) => Ok(tx_ring),
+            Rings::RxTx(_, tx_ring) => Ok(tx_ring),
+            _ => Err(anyhow::anyhow!("Not a TxOnly ring")),
+        }
+    }
+
+    fn rx_ring_mut(&mut self) -> Result<&mut NethunsRing<P>> {
+        match self {
+            Rings::RxOnly(rx_ring) => Ok(rx_ring),
+            Rings::RxTx(rx_ring, _) => Ok(rx_ring),
+            _ => Err(anyhow::anyhow!("Not a RxOnly ring")),
+        }
+    }
+}
+
 
 impl Socket for NetmapSocket {
     type Pkthdr = NetmapPkthdr;
@@ -152,6 +189,64 @@ impl Socket for NetmapSocket {
         Ok(res)
     }
 
+    fn send(&mut self, packet: &[u8]) -> Result<()> {
+        let tx = self.base.available_rings.tx_ring_mut()?;
+        let slot = RingSlot {
+            status: std::sync::atomic::AtomicU32::new(0),
+            len: 0,
+            packet_header: NetmapPkthdr {
+                ts: todo!(),
+                len: packet.len() as u32,
+                caplen: packet.len() as u32,
+                buf_idx: 0,
+            },
+            id: todo!(),
+            len: todo!(),
+            packet: Vec::new(),
+        };
 
+        slot.status.store(RING_SLOT_IN_USE, std::sync::atomic::Ordering::Release);
 
+        let buf_idx = slot.packet_header().buf_idx as usize;
+        let dst = nethuns_get_buf_addr_netmap(self.some_ring, buf_idx);
+        *dst = packet;
+        slot.len = packet.len();
+        tx.push(slot);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        let tx_ring = self.base.available_rings.tx_ring_mut()?;
+        let mut prev_tails = Vec::new();
+        for nm_tx_ring in self.port.tx_rings() {
+            prev_tails.push(nm_tx_ring.tail);
+
+            loop {
+                if nm_tx_ring.is_empty() {
+                    break;
+                }
+                let Some(slot) = tx_ring.pop() else {
+                    // TODO: handle the case
+                    panic!();
+                };
+                if slot.status.load(std::sync::atomic::Ordering::Acquire) != RING_SLOT_IN_USE {
+                    break;
+                }
+                slot.status.store(RING_SLOT_IN_FLIGHT, std::sync::atomic::Ordering::Relaxed);
+
+                let mut netmap_slot = todo!("get head slot");
+            }
+
+        }
+
+        // let tmp = self.port.
+        Ok(())
+    }
+
+}
+
+fn nethuns_get_buf_addr_netmap(some_ring: usize, buf_index: usize) -> ! {
+    // some_ring.nr_buf_size
+    netmap_buf(some_ring, buf_index);
+    todo!()
 }
