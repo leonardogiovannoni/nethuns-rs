@@ -16,7 +16,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wrapper::{TxSlot, Umem, XdpDescData, XskSocket};
 
-//use libxdp_sys::*; // assume libxdp_sys crate exposes the raw C bindings
 
 // Constants from the C code
 const NUM_FRAMES: usize = 4096;
@@ -193,7 +192,6 @@ struct UmemManager {
 }
 
 impl UmemManager {
-    /// Create a new XskUmemInfo, set up the UMEM, and initialize the internal frame store.
     pub fn create_with_buffer(
         umem: UmemArea,
         consumer: mpsc::Consumer<BufferIndex>,
@@ -249,10 +247,6 @@ impl UmemManager {
         Ok(())
     }
 
-    // Reads the Completion Ring (CQ) to reclaim frames that were used for Tx.
-    // Returns how many frames were reclaimed.
-
-    // lo userò quando ho fallisce la read o la write
 } //
 
 fn complete_tx(xsk: &Socket) -> io::Result<()> {
@@ -342,38 +336,16 @@ impl Port {
 
 /// Wraps an AF_XDP socket.
 pub struct Socket {
-    /// The Rx and Tx rings (part of the XDP socket).
-    // rx: RefCell<RxRing>,
-    // tx: RefCell<TxRing>,
     ctx: Context,
-    /// The UMEM info. Now also handles fill/completion ring & frame addresses.
-
-    /// The pointer to the underlying xsk_socket (from libxdp_sys).
-    // xsk: *mut xsk_socket,
     xsk: RefCell<XskSocket>,
-    /// Outstanding Tx frames (to know how many completions to expect).
     outstanding_tx: u32,
-
     umem_manager: RefCell<UmemManager>,
-    //consumer: mpsc::Consumer<BufferIndex>,
-    /// Stats
     stats: Cell<StatsRecord>,
     prev_stats: Cell<StatsRecord>,
 }
 
-type Filter = ();
 
 impl Socket {
-    // pub fn create(
-    //     portspec: &str,
-    //     extra_buf: usize,
-    //     filter: Option<Filter>,
-    //     xdp_flags: u32,
-    //     bind_flags: u16,
-    // ) -> Result<(Context, Self)> {
-    //
-    // }
-
     fn recv_inner(&self, slot: XdpDescData) -> Result<PayloadToken> {
         let offset = slot.offset;
         let len = slot.len as usize;
