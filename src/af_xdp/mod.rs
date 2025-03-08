@@ -1,4 +1,7 @@
 mod wrapper;
+use crate::api::{
+    BufferIndex, NethunsContext, NethunsFlags, NethunsPayload, NethunsSocket, NethunsToken,
+};
 use anyhow::{Result, bail};
 use libc::{self, _SC_PAGESIZE, sysconf};
 use libxdp_sys::XSK_UMEM__DEFAULT_FRAME_SIZE;
@@ -12,7 +15,6 @@ use std::os::raw::c_int;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wrapper::{TxSlot, Umem, XdpDescData, XskSocket};
-use crate::api::{BufferIndex, NethunsContext, NethunsPayload, NethunsSocket, NethunsToken};
 
 //use libxdp_sys::*; // assume libxdp_sys crate exposes the raw C bindings
 
@@ -362,48 +364,15 @@ pub struct Socket {
 type Filter = ();
 
 impl Socket {
-    pub fn create(
-        portspec: &str,
-        extra_buf: usize,
-        filter: Option<Filter>,
-        xdp_flags: u32,
-        bind_flags: u16,
-    ) -> Result<(Context, Self)> {
-        let umem_bytes_len = NUM_FRAMES as u64 * FRAME_SIZE;
-        let umem = UmemArea::new(umem_bytes_len)?;
-
-        let (ctx, consumer) = Context::new(umem.clone());
-
-        for i in 0..NUM_FRAMES {
-            ctx.producer
-                .borrow_mut()
-                .push(BufferIndex::from((i as u32) * FRAME_SIZE as u32));
-        }
-        ctx.producer.borrow_mut().flush();
-        let mut umem_manager = UmemManager::create_with_buffer(umem.clone(), consumer)?;
-
-        let port = Port::parse(portspec)?;
-
-        let socket = unsafe {
-            XskSocket::create(
-                &umem_manager.umem,
-                &port.ifname,
-                port.queue_id,
-                xdp_flags,
-                bind_flags,
-            )?
-        };
-
-        umem_manager.refill_fill_ring()?;
-        Ok((ctx.clone(), Self {
-            ctx,
-            xsk: RefCell::new(socket),
-            outstanding_tx: 0,
-            umem_manager: RefCell::new(umem_manager),
-            stats: Cell::new(StatsRecord::default()),
-            prev_stats: Cell::new(StatsRecord::default()),
-        }))
-    }
+    // pub fn create(
+    //     portspec: &str,
+    //     extra_buf: usize,
+    //     filter: Option<Filter>,
+    //     xdp_flags: u32,
+    //     bind_flags: u16,
+    // ) -> Result<(Context, Self)> {
+    //
+    // }
 
     fn recv_inner(&self, slot: XdpDescData) -> Result<PayloadToken> {
         let offset = slot.offset;
@@ -494,8 +463,8 @@ impl Socket {
 
 impl NethunsSocket for Socket {
     type Context = Context;
-
     type Token = PayloadToken;
+    type Flags = AfXdpFlags;
 
     fn recv(&mut self) -> anyhow::Result<Self::Token> {
         if let Some(slot) = self.xsk.borrow_mut().rx_mut().next() {
@@ -542,10 +511,57 @@ impl NethunsSocket for Socket {
         };
     }
 
-    fn context(&self) -> &Self::Context {
-        todo!()
+    fn create(
+        portspec: &str,
+        filter: Option<()>,
+        flags: Self::Flags,
+    ) -> anyhow::Result<(Self::Context, Self)> {
+        let xdp_flags = flags.xdp_flags;
+        let bind_flags = flags.bind_flags;
+        let umem_bytes_len = NUM_FRAMES as u64 * FRAME_SIZE;
+        let umem = UmemArea::new(umem_bytes_len)?;
+
+        let (ctx, consumer) = Context::new(umem.clone());
+
+        for i in 0..NUM_FRAMES {
+            ctx.producer
+                .borrow_mut()
+                .push(BufferIndex::from((i as u32) * FRAME_SIZE as u32));
+        }
+        ctx.producer.borrow_mut().flush();
+        let mut umem_manager = UmemManager::create_with_buffer(umem.clone(), consumer)?;
+
+        let port = Port::parse(portspec)?;
+
+        let socket = unsafe {
+            XskSocket::create(
+                &umem_manager.umem,
+                &port.ifname,
+                port.queue_id,
+                xdp_flags,
+                bind_flags,
+            )?
+        };
+
+        umem_manager.refill_fill_ring()?;
+        Ok((ctx.clone(), Self {
+            ctx,
+            xsk: RefCell::new(socket),
+            outstanding_tx: 0,
+            umem_manager: RefCell::new(umem_manager),
+            stats: Cell::new(StatsRecord::default()),
+            prev_stats: Cell::new(StatsRecord::default()),
+        }))
     }
 }
+
+#[derive(Clone)]
+pub struct AfXdpFlags {
+    pub bind_flags: u16,
+    pub xdp_flags: u32,
+}
+
+impl NethunsFlags for AfXdpFlags {}
 
 /// Get the current time in nanoseconds (monotonic clock).
 fn gettime() -> u64 {
@@ -560,10 +576,6 @@ fn gettime() -> u64 {
     }
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
 }
-
-
-
-
 
 pub fn alloc_page_aligned(size: usize) -> io::Result<*mut u8> {
     // In purely std-only Rust, there's no direct API to get the OS page size,
@@ -603,8 +615,8 @@ mod tests {
 
     #[test]
     fn test_send_with_flush() {
-        let (ctx0, mut socket0) = Socket::create("veth_test0:0", 1024, None, 0, 0).unwrap();
-        let (_, mut socket1) = Socket::create("veth_test1:0", 1024, None, 0, 0).unwrap();
+        let (ctx0, mut socket0) = Socket::create("veth_test0:0", None, AfXdpFlags { xdp_flags: 0, bind_flags: 0 }).unwrap();
+        let (_, mut socket1) = Socket::create("veth_test1:0", None, AfXdpFlags { xdp_flags: 0, bind_flags: 0 }).unwrap();
         socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();
         socket1.flush();
         let packet = socket0.recv().unwrap().load(&ctx0);

@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use mpsc::Producer;
-use crate::api::{NethunsContext, NethunsPayload, NethunsSocket, NethunsToken, BufferIndex};
+use crate::api::{BufferIndex, NethunsContext, NethunsFlags, NethunsPayload, NethunsSocket, NethunsToken};
 use netmap_rs::context::{BufferPool, Port, Receiver, RxBuf, Transmitter, TxBuf};
 use nix::sys::time::TimeVal;
 use std::cell::RefCell;
@@ -290,24 +290,15 @@ impl Socket {
         Ok(ManuallyDrop::into_inner(packet_token))
     }
 
-    pub fn create(portspec: &str, extra_buf: usize, filter: Option<Filter>) -> Result<(Context, Self)> {
-        let mut port = Port::open(portspec, extra_buf as u32)?;
-        let extra_bufs = unsafe { port.extra_buffers_indexes() };
-        let (tx, rx, buffer_pool) = port.split();
-        let (ctx, consumer) = Context::new(buffer_pool, extra_bufs);
-        Ok((ctx.clone(), Self {
-            tx: RefCell::new(tx),
-            rx: RefCell::new(rx),
-            ctx,
-            consumer: RefCell::new(consumer),
-            filter,
-        }))
-    }
+    //pub fn create(portspec: &str, extra_buf: usize, filter: Option<Filter>) -> Result<(Context, Self)> {
+    //   
+    //}
 }
 
 impl NethunsSocket for Socket {
     type Context = Context;
     type Token = PayloadToken;
+    type Flags = NetmapFlags;
 
     fn recv(&mut self) -> anyhow::Result<Self::Token> {
         let mut rx = self.rx.borrow_mut();
@@ -350,8 +341,28 @@ impl NethunsSocket for Socket {
             tx.sync();
         }
     }
-
-    fn context(&self) -> &Self::Context {
-        &self.ctx
+    
+    fn create(portspec: &str, filter: Option<()>, flags: Self::Flags) -> anyhow::Result<(Self::Context, Self)> {
+        let mut port = Port::open(portspec, flags.extra_buf as u32)?;
+        let extra_bufs = unsafe { port.extra_buffers_indexes() };
+        let (tx, rx, buffer_pool) = port.split();
+        let (ctx, consumer) = Context::new(buffer_pool, extra_bufs);
+        Ok((ctx.clone(), Self {
+            tx: RefCell::new(tx),
+            rx: RefCell::new(rx),
+            ctx,
+            consumer: RefCell::new(consumer),
+            filter: None, // TODO
+        }))
     }
+    
 }
+
+
+
+#[derive(Clone, Copy, Debug)]
+pub struct NetmapFlags {
+    pub extra_buf: usize,
+}
+
+impl NethunsFlags for NetmapFlags {}

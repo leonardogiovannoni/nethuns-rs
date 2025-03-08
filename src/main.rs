@@ -1,12 +1,12 @@
 #![feature(associated_type_defaults)]
 #![feature(cell_update)]
 #![feature(slice_ptr_get)]
+mod af_xdp;
 mod api;
 mod netmap;
-mod af_xdp;
 use anyhow::{Result, bail};
-use mpsc::Producer;
 use api::{NethunsContext, NethunsPayload, NethunsSocket, NethunsToken};
+use mpsc::Producer;
 use netmap_rs::context::{BufferPool, Port, Receiver, RxBuf, Transmitter, TxBuf};
 use nix::sys::time::TimeVal;
 use std::cell::RefCell;
@@ -16,7 +16,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/* 
+/*
 #[derive(Clone, Copy, Debug)]
 struct U24Repr {
     data: [u8; 3],
@@ -483,7 +483,7 @@ fn print_addrs(frame: &[u8]) -> Result<String> {
     }
 }
 
-fn main_af_xdp() -> Result<()> {
+fn main_netmap<S: NethunsSocket + 'static>(flags: S::Flags) -> Result<()> {
     // Parse command-line arguments.
     let args = Args::parse();
 
@@ -519,7 +519,6 @@ fn main_af_xdp() -> Result<()> {
     // Create a socket for each requested socket.
     // Here we adapt the port spec to your API: if more than one socket,
     // append the socket id; otherwise use queue 0.
-    let extra_buf = 1024;
     let mut sockets = Vec::with_capacity(args.sockets);
     for i in 0..args.sockets {
         let portspec = if args.sockets > 1 {
@@ -529,75 +528,14 @@ fn main_af_xdp() -> Result<()> {
             // format!("{}", args.interface)
             args.interface.clone()
         };
-        let socket = af_xdp::Socket::create(&portspec, extra_buf, None, 0, 0)?;
+        let socket = S::create(&portspec, None, flags.clone())?;
         sockets.push(socket);
     }
 
     // Start the statistics thread.
     // If a per-socket stat is requested via --sockstats, print that socket’s stats;
     // otherwise print the aggregated count.
-    do_main(args, term, totals, sockets)
-}
-
-
-fn main_netmap() -> Result<()> {
-    // Parse command-line arguments.
-    let args = Args::parse();
-
-    println!("Test {} started with parameters:", args.interface);
-    println!("* interface: {}", args.interface);
-    println!("* sockets: {}", args.sockets);
-    println!(
-        "* multithreading: {}",
-        if args.multithreading { "ON" } else { "OFF" }
-    );
-    if let Some(sockid) = args.sockstats {
-        println!("* sockstats: ON for socket {}", sockid);
-    } else {
-        println!("* sockstats: OFF, aggregated stats only");
-    }
-    println!("* debug: {}", if args.debug { "ON" } else { "OFF" });
-
-    // Setup a termination flag (triggered on Ctrl+C).
-    let term = Arc::new(AtomicBool::new(false));
-    {
-        let term = term.clone();
-        ctrlc::set_handler(move || {
-            term.store(true, Ordering::SeqCst);
-        })
-        .expect("Error setting Ctrl-C handler");
-    }
-
-    // Create per-socket packet counters.
-    let totals: Vec<Arc<AtomicU64>> = (0..args.sockets)
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
-
-    // Create a socket for each requested socket.
-    // Here we adapt the port spec to your API: if more than one socket,
-    // append the socket id; otherwise use queue 0.
-    let extra_buf = 1024;
-    let mut sockets = Vec::with_capacity(args.sockets);
-    for i in 0..args.sockets {
-        let portspec = if args.sockets > 1 {
-            // format!("{}:{}", args.interface, i)
-            panic!()
-        } else {
-            // format!("{}", args.interface)
-            args.interface.clone()
-        };
-        let socket = netmap::Socket::create(&portspec, extra_buf, None)?;
-        sockets.push(socket);
-    }
-
-    // Start the statistics thread.
-    // If a per-socket stat is requested via --sockstats, print that socket’s stats;
-    // otherwise print the aggregated count.
-    do_main(args, term, totals, sockets)
-}
-
-
-fn do_main<S: NethunsSocket + 'static>(args: Args, term: Arc<AtomicBool>, totals: Vec<Arc<AtomicU64>>, mut sockets: Vec<(S::Context, S)>) -> std::result::Result<(), anyhow::Error> {
+    let mut sockets = sockets;
     let totals_stats = totals.clone();
     let term_stats = term.clone();
     let stats_handle = if let Some(sockid) = args.sockstats {
@@ -674,8 +612,6 @@ fn do_main<S: NethunsSocket + 'static>(args: Args, term: Arc<AtomicBool>, totals
         let debug = args.debug;
         println!("debug: {:?}", debug);
         let handle = thread::spawn(move || {
-            //println!("thread::spawn");
-
             let mut local_counters = vec![0; sockets.len()];
             while !term_loop.load(Ordering::SeqCst) {
                 for (i, (ctx, socket)) in sockets.iter_mut().enumerate() {
@@ -716,12 +652,18 @@ fn do_main<S: NethunsSocket + 'static>(args: Args, term: Arc<AtomicBool>, totals
 }
 
 fn main() {
-    let res = main_netmap();
+    let netmap_flags = netmap::NetmapFlags { extra_buf: 1024 };
+
+    let res = main_netmap::<netmap::Socket>(netmap_flags);
     match res {
         Ok(_) => println!("Success"),
         Err(e) => eprintln!("Error: {:?}", e),
     }
-    let res = main_af_xdp();
+    let af_xdp_flags = af_xdp::AfXdpFlags {
+        bind_flags: 0,
+        xdp_flags: 0,
+    };
+    let res = main_netmap::<af_xdp::Socket>(af_xdp_flags);
     match res {
         Ok(_) => println!("Success"),
         Err(e) => eprintln!("Error: {:?}", e),

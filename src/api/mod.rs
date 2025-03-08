@@ -1,4 +1,4 @@
-use std::ops::{Deref, DerefMut};
+use std::{any::Any, ops::{Deref, DerefMut}};
 
 /*use crate::BufferIndex;
 
@@ -135,11 +135,13 @@ pub trait NethunsPayload<'a>: AsRef<[u8]> + AsMut<[u8]> + Deref<Target = [u8]> +
 }
 
 /// The common API for a network socket, which can send, receive, and flush.
-pub trait NethunsSocket: Send {
+pub trait NethunsSocket: Send + Sized {
     /// The associated context.
     type Context: NethunsContext;
     /// The token returned by `recv()`.
     type Token: NethunsToken<Context = Self::Context>;
+
+    type Flags: NethunsFlags + Clone;
 
     /// Receives a packet and returns a token.
     fn recv(&mut self) -> anyhow::Result<Self::Token>;
@@ -153,5 +155,15 @@ pub trait NethunsSocket: Send {
 
     /// Return a reference to the socket’s context, if needed (for example,
     /// to load a payload token).
-    fn context(&self) -> &Self::Context;
+
+    fn create(portspec: &str, filter: Option<()>, flags: Self::Flags) -> anyhow::Result<(Self::Context, Self)>;
 }
+
+
+
+pub trait NethunsFlags {}
+
+// pub enum NethunsFlags {
+//     Netmap(NetmapFlags),
+//     AfXdp(AfXdpFlags),
+// }
