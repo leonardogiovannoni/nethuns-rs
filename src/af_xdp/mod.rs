@@ -350,11 +350,16 @@ impl Socket {
         let offset = slot.offset;
         let len = slot.len as usize;
         let options = slot.options;
-        self.stats.update(|mut s| {
-            s.rx_bytes += len as u64;
-            s.rx_packets += 1;
-            s
-        });
+        // self.stats.update(|mut s| {
+        //     s.rx_bytes += len as u64;
+        //     s.rx_packets += 1;
+        //     s
+        // });
+        let mut stats = self.stats.get();
+        stats.rx_bytes += len as u64;
+        stats.rx_packets += 1;
+        self.stats.set(stats);
+
         let buffer_pool = self.ctx.index;
         let token = PayloadToken::new(offset as u32, buffer_pool as u32, len as u32);
         Ok(ManuallyDrop::into_inner(token))
@@ -380,11 +385,15 @@ impl Socket {
         }
 
         // Update stats, etc.
-        self.stats.update(|mut s| {
-            s.tx_bytes += payload.len() as u64;
-            s.tx_packets += 1;
-            s
-        });
+        // self.stats.update(|mut s| {
+        //     s.tx_bytes += payload.len() as u64;
+        //     s.tx_packets += 1;
+        //     s
+        // });
+        let mut stats = self.stats.get();
+        stats.tx_bytes += payload.len() as u64;
+        stats.tx_packets += 1;
+        self.stats.set(stats);
 
         Ok(())
     }
@@ -524,6 +533,10 @@ impl NethunsSocket for Socket {
             stats: Cell::new(StatsRecord::default()),
             prev_stats: Cell::new(StatsRecord::default()),
         }))
+    }
+    
+    fn context(&self) -> &Self::Context {
+        &self.ctx
     }
 }
 

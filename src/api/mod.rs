@@ -143,6 +143,12 @@ pub trait NethunsSocket: Send + Sized {
 
     type Flags: NethunsFlags + Clone;
 
+
+    fn recv_local(&mut self) -> anyhow::Result<<Self::Context as NethunsContext>::Payload<'_>> {
+        let token = self.recv()?;
+        Ok(token.load(self.context()))
+    }
+
     /// Receives a packet and returns a token.
     fn recv(&mut self) -> anyhow::Result<Self::Token>;
 
@@ -157,6 +163,8 @@ pub trait NethunsSocket: Send + Sized {
     /// to load a payload token).
 
     fn create(portspec: &str, filter: Option<()>, flags: Self::Flags) -> anyhow::Result<(Self::Context, Self)>;
+
+    fn context(&self) -> &Self::Context;
 }
 
 

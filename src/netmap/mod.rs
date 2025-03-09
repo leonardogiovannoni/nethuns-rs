@@ -355,6 +355,10 @@ impl NethunsSocket for Socket {
             filter: None, // TODO
         }))
     }
+
+    fn context(&self) -> &Self::Context {
+        &self.ctx
+    }
     
 }
 
