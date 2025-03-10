@@ -253,6 +253,7 @@ impl RxRing {
         Self { rx, cached: v }
     }
 
+    #[inline(always)]
     fn advance(&mut self) -> Option<XdpDescData> {
         if let Some(desc) = self.cached.pop_front() {
             Some(desc)
@@ -283,6 +284,7 @@ impl RxRing {
 impl Iterator for RxRing {
     type Item = XdpDescData;
 
+    #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
         self.advance()
     }

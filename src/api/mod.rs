@@ -72,6 +72,28 @@ pub trait NethunsSocket: Send {
 */
 //use crate::BufferIndex;
 
+pub trait StrategyArgs: Clone + Default {}
+
+pub trait Strategy: Clone + 'static {
+    type Producer: BufferProducer;
+    type Consumer: BufferConsumer;
+    type Args: StrategyArgs;
+    fn create(args: Self::Args) -> (Self::Producer, Self::Consumer);
+}
+
+pub trait BufferProducer: Clone + Send {
+    fn push(&mut self, elem: BufferIndex);
+    fn flush(&mut self);
+}
+
+pub trait BufferConsumer: Send {
+    fn pop(&mut self) -> Option<BufferIndex>;
+    fn available_len(&self) -> usize;
+    fn sync(&mut self);
+}
+
+
+
 
 #[derive(Clone, Copy, Debug)]
 pub struct BufferIndex(u32);
@@ -135,13 +157,13 @@ pub trait NethunsPayload<'a>: AsRef<[u8]> + AsMut<[u8]> + Deref<Target = [u8]> +
 }
 
 /// The common API for a network socket, which can send, receive, and flush.
-pub trait NethunsSocket: Send + Sized {
+pub trait NethunsSocket<S: Strategy>: Send + Sized {
     /// The associated context.
     type Context: NethunsContext;
     /// The token returned by `recv()`.
     type Token: NethunsToken<Context = Self::Context>;
 
-    type Flags: NethunsFlags + Clone;
+    type Flags: NethunsFlags<S> + Clone;
 
 
     fn recv_local(&mut self) -> anyhow::Result<<Self::Context as NethunsContext>::Payload<'_>> {
@@ -169,7 +191,10 @@ pub trait NethunsSocket: Send + Sized {
 
 
 
-pub trait NethunsFlags {}
+pub trait NethunsFlags<S: Strategy> {
+
+    fn strategy_args(&self) -> S::Args;
+}
 
 // pub enum NethunsFlags {
 //     Netmap(NetmapFlags),

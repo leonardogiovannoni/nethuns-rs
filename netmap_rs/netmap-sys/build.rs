@@ -8,8 +8,6 @@ const WRAPPER: &str = "netmap.h";
 
 fn main() {
 
-
-//    std::thread::sleep(std::time::Duration::from_secs(30));
     // Tell cargo to look for shared libraries in the specified directory.
     println!("cargo:rustc-link-search=/usr/local/lib/");
 

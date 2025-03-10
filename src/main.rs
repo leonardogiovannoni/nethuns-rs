@@ -1,8 +1,9 @@
 mod af_xdp;
 mod api;
 mod netmap;
+mod strategy;
 use anyhow::{Result, bail};
-use api::{NethunsSocket, NethunsToken};
+use api::{NethunsSocket, NethunsToken, Strategy};
 use clap::{Parser, Subcommand};
 use etherparse::{NetHeaders, PacketHeaders};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -10,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
+use strategy::MpscStrategy;
 
 // Framework-specific flag structures.
 pub struct AfXdpFlags {
@@ -98,11 +100,17 @@ fn print_addrs(frame: &[u8]) -> Result<String> {
     }
 }
 
-fn run<S: NethunsSocket + 'static>(flags: S::Flags, args: &Args) -> Result<()> {
+fn run<S: Strategy, Sock: NethunsSocket<S> + 'static>(
+    flags: Sock::Flags,
+    args: &Args,
+) -> Result<()> {
     println!("Test {} started with parameters:", args.interface);
     println!("* interface: {}", args.interface);
     println!("* sockets: {}", args.sockets);
-    println!("* multithreading: {}", if args.multithreading { "ON" } else { "OFF" });
+    println!(
+        "* multithreading: {}",
+        if args.multithreading { "ON" } else { "OFF" }
+    );
     if let Some(sockid) = args.sockstats {
         println!("* sockstats: ON for socket {}", sockid);
     } else {
@@ -134,7 +142,7 @@ fn run<S: NethunsSocket + 'static>(flags: S::Flags, args: &Args) -> Result<()> {
         } else {
             args.interface.clone()
         };
-        let socket = S::create(&portspec, None, flags.clone())?;
+        let socket = Sock::create(&portspec, None, flags.clone())?;
         sockets.push(socket);
     }
 
@@ -147,7 +155,11 @@ fn run<S: NethunsSocket + 'static>(flags: S::Flags, args: &Args) -> Result<()> {
             while !term_stats.load(Ordering::SeqCst) {
                 thread::sleep(Duration::from_secs(1));
                 let count = totals_stats[sockid].load(Ordering::SeqCst);
-                println!("Socket {} pkt/sec: {}", sockid, count.saturating_sub(old_total));
+                println!(
+                    "Socket {} pkt/sec: {}",
+                    sockid,
+                    count.saturating_sub(old_total)
+                );
                 old_total = count;
             }
         })
@@ -246,13 +258,13 @@ fn run<S: NethunsSocket + 'static>(flags: S::Flags, args: &Args) -> Result<()> {
 //     pub ifindex: u32,
 //     pub queue_id: u32,
 // }
-// 
+//
 // fn ifname_to_ifindex(ifname: &str) -> Option<u32> {
 //     let c_ifname = CString::new(ifname).ok()?;
 //     let index = unsafe { libc::if_nametoindex(c_ifname.as_ptr()) };
 //     if index == 0 { None } else { Some(index) }
 // }
-// 
+//
 // impl FromStr for NethunsPort {
 //     type Err = anyhow::Error;
 //     fn from_str(portspec: &str) -> std::result::Result<Self, Self::Err> {
@@ -276,23 +288,27 @@ fn run<S: NethunsSocket + 'static>(flags: S::Flags, args: &Args) -> Result<()> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    // Validate the interface name.
     match &args.framework {
         Framework::Netmap(netmap_args) => {
-            run::<netmap::Socket>(
-                netmap::NetmapFlags { extra_buf: netmap_args.extra_buf },
-                &args
+            run::<MpscStrategy, netmap::Socket<MpscStrategy>>(
+                netmap::NetmapFlags {
+                    extra_buf: netmap_args.extra_buf,
+                    strategy_args: None,
+                },
+                &args,
             )?;
-        },
+        }
         Framework::AfXdp(af_xdp_args) => {
-            run::<af_xdp::Socket>(
+            run::<MpscStrategy, af_xdp::Socket<MpscStrategy>>(
                 af_xdp::AfXdpFlags {
                     bind_flags: af_xdp_args.bind_flags,
                     xdp_flags: af_xdp_args.xdp_flags,
+                    strategy_args: None,
                 },
-                &args
+                &args,
             )?;
-        },
+        }
+        _ => bail!("Unsupported framework"),
     }
     Ok(())
 }
