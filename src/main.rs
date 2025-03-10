@@ -290,7 +290,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
     match &args.framework {
         Framework::Netmap(netmap_args) => {
-            run::<MpscStrategy, netmap::Socket<MpscStrategy>>(
+            run::<MpscStrategy, netmap::Socket<_>>(
                 netmap::NetmapFlags {
                     extra_buf: netmap_args.extra_buf,
                     strategy_args: None,
@@ -299,7 +299,7 @@ fn main() -> Result<()> {
             )?;
         }
         Framework::AfXdp(af_xdp_args) => {
-            run::<MpscStrategy, af_xdp::Socket<MpscStrategy>>(
+            run::<MpscStrategy, af_xdp::Socket<_>>(
                 af_xdp::AfXdpFlags {
                     bind_flags: af_xdp_args.bind_flags,
                     xdp_flags: af_xdp_args.xdp_flags,
