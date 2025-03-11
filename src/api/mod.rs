@@ -165,14 +165,15 @@ pub trait NethunsSocket<S: Strategy>: Send + Sized {
 
     type Flags: NethunsFlags<S> + Clone;
 
+    type Metadata: NethunsMetadata;
 
-    fn recv_local(&mut self) -> anyhow::Result<<Self::Context as NethunsContext>::Payload<'_>> {
-        let token = self.recv()?;
-        Ok(token.load(self.context()))
+    fn recv_local(&mut self) -> anyhow::Result<(<Self::Context as NethunsContext>::Payload<'_>, Self::Metadata)> {
+        let (token, meta) = self.recv()?;
+        Ok((token.load(self.context()), meta))
     }
 
     /// Receives a packet and returns a token.
-    fn recv(&mut self) -> anyhow::Result<Self::Token>;
+    fn recv(&mut self) -> anyhow::Result<(Self::Token, Self::Metadata)>;
 
     /// Sends a packet. The packet is provided as a slice.
     fn send(&mut self, packet: &[u8]) -> anyhow::Result<()>;
@@ -189,6 +190,8 @@ pub trait NethunsSocket<S: Strategy>: Send + Sized {
     fn context(&self) -> &Self::Context;
 }
 
+
+pub trait NethunsMetadata { }
 
 
 pub trait NethunsFlags<S: Strategy> {

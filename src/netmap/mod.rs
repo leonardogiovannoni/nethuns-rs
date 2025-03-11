@@ -1,5 +1,5 @@
 use crate::api::{
-    BufferConsumer, BufferIndex, BufferProducer, NethunsContext, NethunsFlags, NethunsPayload, NethunsSocket, NethunsToken, Strategy
+    BufferConsumer, BufferIndex, BufferProducer, NethunsContext, NethunsFlags, NethunsMetadata, NethunsPayload, NethunsSocket, NethunsToken, Strategy
 };
 use crate::strategy::MpscArgs;
 use anyhow::{Result, bail};
@@ -278,7 +278,7 @@ impl<S: Strategy> Socket<S> {
     }
 
     #[inline(always)]
-    fn recv_inner(&self, buf: RxBuf<'_>) -> Result<PayloadToken<S>> {
+    fn recv_inner(&self, buf: RxBuf<'_>) -> Result<(PayloadToken<S>, Metadata)> {
         let RxBuf { slot, ts, .. } = buf;
         let free_idx = self
             .consumer
@@ -298,7 +298,7 @@ impl<S: Strategy> Socket<S> {
                 bail!("Filter failed");
             }
         }
-        Ok(ManuallyDrop::into_inner(packet_token))
+        Ok((ManuallyDrop::into_inner(packet_token), Metadata {}))
     }
 
     //pub fn create(portspec: &str, extra_buf: usize, filter: Option<Filter>) -> Result<(Context, Self)> {
@@ -310,8 +310,9 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
     type Context = Context<S>;
     type Token = PayloadToken<S>;
     type Flags = NetmapFlags<S>;
+    type Metadata = Metadata;
 
-    fn recv(&mut self) -> anyhow::Result<Self::Token> {
+    fn recv(&mut self) -> anyhow::Result<(Self::Token, Self::Metadata)> {
         let mut rx = self.rx.borrow_mut();
         if let Some(tmp) = rx.iter_mut().next() {
             self.recv_inner(tmp)
@@ -384,6 +385,11 @@ pub struct NetmapFlags<S: Strategy> {
     pub extra_buf: usize,
     pub strategy_args: Option<S::Args>,
 }
+
+pub struct Metadata {
+}
+
+impl NethunsMetadata for Metadata {}
 
 impl<S: Strategy> NethunsFlags<S> for NetmapFlags<S> {
     fn strategy_args(&self) -> <S as Strategy>::Args {

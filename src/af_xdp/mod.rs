@@ -1,6 +1,6 @@
 mod wrapper;
 use crate::api::{
-    BufferConsumer, BufferIndex, BufferProducer, NethunsContext, NethunsFlags, NethunsPayload, NethunsSocket, NethunsToken, Strategy
+    BufferConsumer, BufferIndex, BufferProducer, NethunsContext, NethunsFlags, NethunsMetadata, NethunsPayload, NethunsSocket, NethunsToken, Strategy
 };
 use anyhow::{Result, bail};
 use libc::{self, _SC_PAGESIZE, sysconf};
@@ -353,7 +353,7 @@ pub struct Socket<S: Strategy> {
 
 impl<S: Strategy> Socket<S> {
     #[inline(always)]
-    fn recv_inner(&self, slot: XdpDescData) -> Result<PayloadToken<S>> {
+    fn recv_inner(&self, slot: XdpDescData) -> Result<(PayloadToken<S>, Metadata)> {
         let offset = slot.offset;
         let len = slot.len as usize;
         let options = slot.options;
@@ -369,7 +369,7 @@ impl<S: Strategy> Socket<S> {
 
         let buffer_pool = self.ctx.index;
         let token = PayloadToken::new(offset as u32, buffer_pool as u32, len as u32);
-        Ok(ManuallyDrop::into_inner(token))
+        Ok((ManuallyDrop::into_inner(token), Metadata {}))
     }
 
     fn send_inner<'a>(&self, mut slot: TxSlot<'a>, payload: &[u8]) -> Result<()> {
@@ -453,9 +453,10 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
     type Context = Context<S>;
     type Token = PayloadToken<S>;
     type Flags = AfXdpFlags<S>;
+    type Metadata = Metadata;
 
     #[inline(never)]
-    fn recv(&mut self) -> anyhow::Result<Self::Token> {
+    fn recv(&mut self) -> anyhow::Result<(Self::Token, Self::Metadata)> {
         let mut rx = self.xsk.borrow_mut();
         if let Some(slot) = rx.rx_mut().next() {
             self.recv_inner(slot)
@@ -604,6 +605,13 @@ pub fn alloc_page_aligned(size: usize) -> io::Result<*mut u8> {
     }
 }
 
+pub struct Metadata {
+
+}
+
+impl NethunsMetadata for Metadata {
+}
+
 #[cfg(test)]
 mod tests {
     use crate::strategy::{MpscArgs, MpscStrategy};
@@ -642,7 +650,7 @@ mod tests {
         .unwrap();
         socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();
         socket1.flush();
-        let packet = &*socket0.recv().unwrap().load(&ctx0);
+        let (packet, meta) = socket0.recv_local().unwrap();
         assert_eq!(&packet[..20], b"Helloworldmyfriend\0\0");
     }
 }

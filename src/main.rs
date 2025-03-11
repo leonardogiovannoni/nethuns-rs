@@ -195,7 +195,7 @@ fn run<S: Strategy, Sock: NethunsSocket<S> + 'static>(
                             local_counter = 0;
                         }
                         let res: Result<()> = (|| {
-                            let pkt = &*socket.recv()?.load(&ctx);
+                            let (pkt, meta) = socket.recv_local()?;
                             if debug {
                                 if let Ok(info) = print_addrs(&pkt) {
                                     println!("Thread {}: {}", i, info);
@@ -222,14 +222,14 @@ fn run<S: Strategy, Sock: NethunsSocket<S> + 'static>(
                 for (i, (ctx, socket)) in sockets.iter_mut().enumerate() {
                     let res: Result<()> = (|| {
                         // let packet = &*socket.recv()?.load(&ctx);
-                        let packet = &*socket.recv_local()?;
+                        let (packet, meta) = socket.recv_local()?;
                         local_counters[i] += 1;
                         if local_counters[i] == BULK {
                             totals[i].fetch_add(local_counters[i], Ordering::SeqCst);
                             local_counters[i] = 0;
                         }
                         if debug {
-                            if let Ok(info) = print_addrs(&packet) {
+                            if let Ok(info) = print_addrs(&*packet) {
                                 println!("Socket {}: {}", i, info);
                             }
                         }
