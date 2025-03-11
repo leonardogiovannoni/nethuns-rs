@@ -1,5 +1,6 @@
 use crate::api::{
-    BufferConsumer, BufferIndex, BufferProducer, NethunsContext, NethunsFlags, NethunsMetadata, NethunsPayload, NethunsSocket, NethunsToken, Strategy
+    BufferConsumer, BufferIndex, BufferProducer, NethunsContext, NethunsFlags, NethunsMetadata,
+    NethunsPayload, NethunsSocket, NethunsToken, Strategy, StrategyArgsEnum,
 };
 use anyhow::{Result, bail};
 use netmap_rs::context::{BufferPool, Port, Receiver, RxBuf, Transmitter, TxBuf};
@@ -55,7 +56,7 @@ impl<S: Strategy> Context<S> {
     fn new(
         buffer_pool: BufferPool,
         indexes: Vec<u32>,
-        strategy_args: S::Args,
+        strategy_args: StrategyArgsEnum,
     ) -> (Self, S::Consumer) {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let (mut producer, cons) = S::create(strategy_args);
@@ -298,13 +299,11 @@ impl<S: Strategy> Socket<S> {
         }
         Ok((ManuallyDrop::into_inner(packet_token), Metadata {}))
     }
-
 }
 
 impl<S: Strategy> NethunsSocket<S> for Socket<S> {
     type Context = Context<S>;
     type Token = PayloadToken<S>;
-    type Flags = NetmapFlags<S>;
     type Metadata = Metadata;
 
     fn recv(&mut self) -> anyhow::Result<(Self::Token, Self::Metadata)> {
@@ -352,12 +351,16 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
     fn create(
         portspec: &str,
         filter: Option<()>,
-        flags: Self::Flags,
+        flags: NethunsFlags,
     ) -> anyhow::Result<(Self::Context, Self)> {
+        let flags = match flags {
+            NethunsFlags::Netmap(flags) => flags,
+            _ => panic!("Invalid flags"),
+        };
         let mut port = Port::open(portspec, flags.extra_buf as u32)?;
         let extra_bufs = unsafe { port.extra_buffers_indexes() };
         let (tx, rx, buffer_pool) = port.split();
-        let (ctx, consumer) = Context::new(buffer_pool, extra_bufs, flags.strategy_args());
+        let (ctx, consumer) = Context::new(buffer_pool, extra_bufs, flags.strategy_args);
         Ok((
             ctx.clone(),
             Self {
@@ -375,19 +378,12 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
     }
 }
 
-#[derive(Clone)]
-pub struct NetmapFlags<S: Strategy> {
+#[derive(Clone, Debug)]
+pub struct NetmapFlags {
     pub extra_buf: usize,
-    pub strategy_args: Option<S::Args>,
+    pub strategy_args: StrategyArgsEnum,
 }
 
-pub struct Metadata {
-}
+pub struct Metadata {}
 
 impl NethunsMetadata for Metadata {}
-
-impl<S: Strategy> NethunsFlags<S> for NetmapFlags<S> {
-    fn strategy_args(&self) -> <S as Strategy>::Args {
-        self.strategy_args.clone().unwrap_or_default()
-    }
-}

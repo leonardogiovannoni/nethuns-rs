@@ -157,7 +157,6 @@ fn ifname_to_ifindex(ifname: &str) -> Option<u32> {
 }
 
 impl XskSocket {
-
     pub fn as_raw(&self) -> *mut xsk_socket {
         self.inner
     }
@@ -224,7 +223,6 @@ impl XskSocket {
             rx,
             tx,
         })
-       
     }
 
     pub fn rx_mut(&mut self) -> &mut RxRing {
@@ -238,9 +236,7 @@ impl XskSocket {
     pub fn fd(&self) -> i32 {
         unsafe { xsk_socket__fd(self.inner) }
     }
-
 }
-
 
 pub struct RxRing {
     rx: xsk_ring_cons,

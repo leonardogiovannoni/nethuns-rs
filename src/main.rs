@@ -3,7 +3,7 @@ mod api;
 mod netmap;
 mod strategy;
 use anyhow::{Result, bail};
-use api::{NethunsSocket, NethunsToken, Strategy};
+use api::{NethunsFlags, NethunsSocket, NethunsToken, Strategy, StrategyArgsEnum};
 use clap::{Parser, Subcommand};
 use etherparse::{NetHeaders, PacketHeaders};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -107,7 +107,7 @@ fn print_addrs(frame: &[u8]) -> Result<String> {
 }
 
 fn run<S: Strategy, Sock: NethunsSocket<S> + 'static>(
-    flags: Sock::Flags,
+    flags: NethunsFlags,
     args: &Args,
 ) -> Result<()> {
     println!("Test {} started with parameters:", args.interface);
@@ -297,43 +297,62 @@ fn main() -> Result<()> {
     match &args.framework {
         Framework::Netmap(netmap_args) => {
             run::<MpscStrategy, netmap::Socket<_>>(
-                netmap::NetmapFlags {
+                // netmap::NetmapFlags {
+                //     extra_buf: netmap_args.extra_buf,
+                //     strategy_args: Some(MpscArgs {
+                //         buffer_size: netmap_args.extra_buf,
+                //         consumer_buffer_size: netmap_args.consumer_buffer_size,
+                //         producer_buffer_size: netmap_args.producer_buffer_size,
+                //     })
+                // },
+                NethunsFlags::Netmap(netmap::NetmapFlags {
                     extra_buf: netmap_args.extra_buf,
-                    strategy_args: Some(MpscArgs {
+                    strategy_args: StrategyArgsEnum::Mpsc(MpscArgs {
                         buffer_size: netmap_args.extra_buf,
                         consumer_buffer_size: netmap_args.consumer_buffer_size,
                         producer_buffer_size: netmap_args.producer_buffer_size,
-                    })
-                },
+                    }),
+                }),
                 &args,
             )?;
 
-//            run::<StdStrategy, netmap::Socket<_>>(
-//                netmap::NetmapFlags {
-//                    extra_buf: netmap_args.extra_buf,
-//                    strategy_args: None
-//                },
-//                &args,
-//            )?;
+            //            run::<StdStrategy, netmap::Socket<_>>(
+            //                netmap::NetmapFlags {
+            //                    extra_buf: netmap_args.extra_buf,
+            //                    strategy_args: None
+            //                },
+            //                &args,
+            //            )?;
 
-//            run::<CrossbeamStrategy, netmap::Socket<_>>(
-//                netmap::NetmapFlags {
-//                    extra_buf: netmap_args.extra_buf,
-//                    strategy_args: Some(CrossbeamArgs {
-//                        buffer_size: netmap_args.extra_buf,
-//                    })
-//                },
-//                &args,
-//            )?;
-
+            //            run::<CrossbeamStrategy, netmap::Socket<_>>(
+            //                netmap::NetmapFlags {
+            //                    extra_buf: netmap_args.extra_buf,
+            //                    strategy_args: Some(CrossbeamArgs {
+            //                        buffer_size: netmap_args.extra_buf,
+            //                    })
+            //                },
+            //                &args,
+            //            )?;
         }
         Framework::AfXdp(af_xdp_args) => {
+            // run::<MpscStrategy, af_xdp::Socket<_>>(
+            //     af_xdp::AfXdpFlags {
+            //         bind_flags: af_xdp_args.bind_flags,
+            //         xdp_flags: af_xdp_args.xdp_flags,
+            //         strategy_args: None,
+            //     },
+            //     &args,
+            // )?;
             run::<MpscStrategy, af_xdp::Socket<_>>(
-                af_xdp::AfXdpFlags {
+                NethunsFlags::AfXdp(af_xdp::AfXdpFlags {
                     bind_flags: af_xdp_args.bind_flags,
                     xdp_flags: af_xdp_args.xdp_flags,
-                    strategy_args: None,
-                },
+                    strategy_args: StrategyArgsEnum::Mpsc(MpscArgs {
+                        buffer_size: 1024,
+                        consumer_buffer_size: 256,
+                        producer_buffer_size: 256,
+                    }),
+                }),
                 &args,
             )?;
         }

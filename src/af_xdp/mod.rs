@@ -1,6 +1,7 @@
 mod wrapper;
 use crate::api::{
-    BufferConsumer, BufferIndex, BufferProducer, NethunsContext, NethunsFlags, NethunsMetadata, NethunsPayload, NethunsSocket, NethunsToken, Strategy
+    BufferConsumer, BufferIndex, BufferProducer, NethunsContext, NethunsFlags, NethunsMetadata,
+    NethunsPayload, NethunsSocket, NethunsToken, Strategy, StrategyArgsEnum,
 };
 use anyhow::{Result, bail};
 use libc::{self, _SC_PAGESIZE, sysconf};
@@ -100,7 +101,7 @@ impl<'a, S: Strategy> Drop for Payload<'a, S> {
     }
 }
 
-fn pippo<S: Strategy>(buffer_pool: UmemArea, args: S::Args) -> (Context<S>, S::Consumer) {
+fn pippo<S: Strategy>(buffer_pool: UmemArea, args: StrategyArgsEnum) -> (Context<S>, S::Consumer) {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let (producer, cons) = S::create(args);
     // mpsc::channel::<BufferIndex>(buffer_pool.size as usize);
@@ -114,7 +115,7 @@ fn pippo<S: Strategy>(buffer_pool: UmemArea, args: S::Args) -> (Context<S>, S::C
 }
 
 impl<S: Strategy> Context<S> {
-    fn new(buffer_pool: UmemArea, args: S::Args) -> (Self, S::Consumer) {
+    fn new(buffer_pool: UmemArea, args: StrategyArgsEnum) -> (Self, S::Consumer) {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let (producer, cons) = S::create(args);
         // mpsc::channel::<BufferIndex>(buffer_pool.size as usize);
@@ -452,7 +453,6 @@ impl<S: Strategy> Socket<S> {
 impl<S: Strategy> NethunsSocket<S> for Socket<S> {
     type Context = Context<S>;
     type Token = PayloadToken<S>;
-    type Flags = AfXdpFlags<S>;
     type Metadata = Metadata;
 
     fn recv(&mut self) -> anyhow::Result<(Self::Token, Self::Metadata)> {
@@ -504,13 +504,17 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
     fn create(
         portspec: &str,
         filter: Option<()>,
-        flags: Self::Flags,
+        flags: NethunsFlags,
     ) -> anyhow::Result<(Self::Context, Self)> {
+        let flags = match flags {
+            NethunsFlags::AfXdp(flags) => flags,
+            _ => panic!("Invalid flags"),
+        };
         let xdp_flags = flags.xdp_flags;
         let bind_flags = flags.bind_flags;
         let umem_bytes_len = NUM_FRAMES as u64 * FRAME_SIZE;
         let umem = UmemArea::new(umem_bytes_len)?;
-        let (ctx, consumer) = pippo(umem.clone(), flags.strategy_args());
+        let (ctx, consumer) = pippo(umem.clone(), flags.strategy_args);
 
         for i in 0..NUM_FRAMES {
             let prod: &mut <S as Strategy>::Producer = &mut *ctx.producer.borrow_mut();
@@ -553,17 +557,11 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
     }
 }
 
-#[derive(Clone)]
-pub struct AfXdpFlags<S: Strategy> {
+#[derive(Clone, Debug)]
+pub struct AfXdpFlags {
     pub bind_flags: u16,
     pub xdp_flags: u32,
-    pub strategy_args: Option<S::Args>,
-}
-
-impl<S: Strategy> NethunsFlags<S> for AfXdpFlags<S> {
-    fn strategy_args(&self) -> <S as Strategy>::Args {
-        self.strategy_args.clone().unwrap_or_default()
-    }
+    pub strategy_args: StrategyArgsEnum,
 }
 
 /// Get the current time in nanoseconds (monotonic clock).
@@ -604,16 +602,16 @@ pub fn alloc_page_aligned(size: usize) -> io::Result<*mut u8> {
     }
 }
 
-pub struct Metadata {
+pub struct Metadata {}
 
-}
-
-impl NethunsMetadata for Metadata {
-}
+impl NethunsMetadata for Metadata {}
 
 #[cfg(test)]
 mod tests {
-    use crate::strategy::{MpscArgs, MpscStrategy};
+    use crate::{
+        api::NethunsFlags,
+        strategy::{MpscArgs, MpscStrategy},
+    };
 
     use super::*;
 
@@ -630,21 +628,31 @@ mod tests {
         let (ctx0, mut socket0) = Socket::<MpscStrategy>::create(
             "veth_test0:0",
             None,
-            AfXdpFlags {
+            // AfXdpFlags {
+            //     xdp_flags: 0,
+            //     bind_flags: 0,
+            //     strategy_args: None,
+            // },
+            NethunsFlags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
-                strategy_args: None,
-            },
+                strategy_args: StrategyArgsEnum::Mpsc(MpscArgs::default()),
+            }),
         )
         .unwrap();
         let (_, mut socket1) = Socket::<MpscStrategy>::create(
             "veth_test1:0",
             None,
-            AfXdpFlags {
+            // AfXdpFlags {
+            //     xdp_flags: 0,
+            //     bind_flags: 0,
+            //     strategy_args: None,
+            // },
+            NethunsFlags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
-                strategy_args: None,
-            },
+                strategy_args: StrategyArgsEnum::Mpsc(MpscArgs::default()),
+            }),
         )
         .unwrap();
         socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();

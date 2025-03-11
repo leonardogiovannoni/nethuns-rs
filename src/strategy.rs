@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 
-use crate::api::{BufferConsumer, BufferIndex, BufferProducer, Strategy, StrategyArgs};
+use crate::api::{
+    BufferConsumer, BufferIndex, BufferProducer, Strategy, StrategyArgs, StrategyArgsEnum,
+};
 
 #[derive(Clone)]
 pub struct MpscStrategy;
@@ -8,10 +10,17 @@ pub struct MpscStrategy;
 impl Strategy for MpscStrategy {
     type Producer = MpscProducer;
     type Consumer = MpscConsumer;
-    type Args = MpscArgs;
 
-    fn create(args: Self::Args) -> (Self::Producer, Self::Consumer) {
-        let (producer, consumer) = mpsc::channel(args.buffer_size, args.consumer_buffer_size, args.producer_buffer_size);
+    fn create(args: StrategyArgsEnum) -> (Self::Producer, Self::Consumer) {
+        let args = match args {
+            StrategyArgsEnum::Mpsc(args) => args,
+            _ => panic!("Invalid argument type"),
+        };
+        let (producer, consumer) = mpsc::channel(
+            args.buffer_size,
+            args.consumer_buffer_size,
+            args.producer_buffer_size,
+        );
         (
             MpscProducer { inner: producer },
             MpscConsumer { inner: consumer },
@@ -19,7 +28,7 @@ impl Strategy for MpscStrategy {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MpscArgs {
     pub buffer_size: usize,
     pub consumer_buffer_size: usize,
@@ -75,10 +84,7 @@ impl BufferProducer for MpscProducer {
     }
 }
 
-
-
 // STD
-
 
 #[derive(Clone)]
 pub struct StdStrategy;
@@ -86,19 +92,25 @@ pub struct StdStrategy;
 impl Strategy for StdStrategy {
     type Producer = StdProducer;
     type Consumer = StdConsumer;
-    type Args = StdArgs;
 
-    fn create(args: Self::Args) -> (Self::Producer, Self::Consumer) {
+    fn create(args: StrategyArgsEnum) -> (Self::Producer, Self::Consumer) {
+        let args = match args {
+            StrategyArgsEnum::Std(args) => args,
+            _ => panic!("Invalid argument type"),
+        };
         let (producer, consumer) = std::sync::mpsc::channel();
         (
-            StdProducer { inner: RefCell::new(producer) },
-            StdConsumer { inner: RefCell::new(consumer) },
+            StdProducer {
+                inner: RefCell::new(producer),
+            },
+            StdConsumer {
+                inner: RefCell::new(consumer),
+            },
         )
     }
 }
 
-
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct StdArgs;
 
 impl Default for StdArgs {
@@ -119,7 +131,7 @@ impl BufferConsumer for StdConsumer {
     }
 
     fn available_len(&self) -> usize {
-        todo!() 
+        todo!()
     }
 
     fn sync(&mut self) {
@@ -150,9 +162,12 @@ pub struct CrossbeamStrategy;
 impl Strategy for CrossbeamStrategy {
     type Producer = CrossbeamProducer;
     type Consumer = CrossbeamConsumer;
-    type Args = CrossbeamArgs;
 
-    fn create(args: Self::Args) -> (Self::Producer, Self::Consumer) {
+    fn create(args: StrategyArgsEnum) -> (Self::Producer, Self::Consumer) {
+        let args = match args {
+            StrategyArgsEnum::Crossbeam(args) => args,
+            _ => panic!("Invalid argument type"),
+        };
         let (producer, consumer) = crossbeam_channel::bounded(args.buffer_size);
         (
             CrossbeamProducer { inner: producer },
@@ -161,14 +176,16 @@ impl Strategy for CrossbeamStrategy {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CrossbeamArgs {
     pub buffer_size: usize,
 }
 
 impl Default for CrossbeamArgs {
     fn default() -> Self {
-        Self { buffer_size: DEFAULT_BUFFER_SIZE }
+        Self {
+            buffer_size: DEFAULT_BUFFER_SIZE,
+        }
     }
 }
 
@@ -184,7 +201,7 @@ impl BufferConsumer for CrossbeamConsumer {
     }
 
     fn available_len(&self) -> usize {
-        todo!() 
+        todo!()
     }
 
     fn sync(&mut self) {
@@ -206,4 +223,3 @@ impl BufferProducer for CrossbeamProducer {
         // do nothing
     }
 }
-

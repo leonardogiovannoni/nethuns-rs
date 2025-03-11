@@ -1,4 +1,13 @@
-use std::{any::Any, ops::{Deref, DerefMut}};
+use std::{
+    any::Any,
+    ops::{Deref, DerefMut},
+};
+
+use crate::{
+    af_xdp::AfXdpFlags,
+    netmap::NetmapFlags,
+    strategy::{CrossbeamArgs, MpscArgs, StdArgs},
+};
 
 /*use crate::BufferIndex;
 
@@ -77,8 +86,8 @@ pub trait StrategyArgs: Clone + Default {}
 pub trait Strategy: Clone + 'static {
     type Producer: BufferProducer;
     type Consumer: BufferConsumer;
-    type Args: StrategyArgs;
-    fn create(args: Self::Args) -> (Self::Producer, Self::Consumer);
+    //type Args: StrategyArgs;
+    fn create(args: StrategyArgsEnum) -> (Self::Producer, Self::Consumer);
 }
 
 pub trait BufferProducer: Clone + Send {
@@ -91,9 +100,6 @@ pub trait BufferConsumer: Send {
     fn available_len(&self) -> usize;
     fn sync(&mut self);
 }
-
-
-
 
 #[derive(Clone, Copy, Debug)]
 pub struct BufferIndex(u32);
@@ -110,18 +116,18 @@ impl From<BufferIndex> for u32 {
     }
 }
 
-
-
 /// A token returned by a receive operation. In both implementations,
 /// the token carries the buffer index (and, optionally, metadata).
 pub trait NethunsToken: Sized {
     /// Which context type produced this token?
     type Context: NethunsContext<Token = Self>;
 
-    fn load<'ctx>(self, ctx: &'ctx Self::Context) -> <Self::Context as NethunsContext>::Payload<'ctx> {
+    fn load<'ctx>(
+        self,
+        ctx: &'ctx Self::Context,
+    ) -> <Self::Context as NethunsContext>::Payload<'ctx> {
         ctx.packet(self)
     }
-
 }
 
 /// A trait representing the buffer pool (or context) that is used by the
@@ -149,7 +155,9 @@ pub trait NethunsContext: Sized + Clone + Send {
 
 /// A trait representing a packet’s payload data. Notice it has a lifetime `'a`:
 /// this means the payload may borrow data out of the context for `'a`.
-pub trait NethunsPayload<'a>: AsRef<[u8]> + AsMut<[u8]> + Deref<Target = [u8]> + DerefMut<Target = [u8]> {
+pub trait NethunsPayload<'a>:
+    AsRef<[u8]> + AsMut<[u8]> + Deref<Target = [u8]> + DerefMut<Target = [u8]>
+{
     /// Which context type is this payload tied to?
     type Context: NethunsContext;
     /// Which token type was used to create it?
@@ -163,11 +171,14 @@ pub trait NethunsSocket<S: Strategy>: Send + Sized {
     /// The token returned by `recv()`.
     type Token: NethunsToken<Context = Self::Context>;
 
-    type Flags: NethunsFlags<S> + Clone;
-
     type Metadata: NethunsMetadata;
 
-    fn recv_local(&mut self) -> anyhow::Result<(<Self::Context as NethunsContext>::Payload<'_>, Self::Metadata)> {
+    fn recv_local(
+        &mut self,
+    ) -> anyhow::Result<(
+        <Self::Context as NethunsContext>::Payload<'_>,
+        Self::Metadata,
+    )> {
         let (token, meta) = self.recv()?;
         Ok((token.load(self.context()), meta))
     }
@@ -185,21 +196,26 @@ pub trait NethunsSocket<S: Strategy>: Send + Sized {
     /// Return a reference to the socket’s context, if needed (for example,
     /// to load a payload token).
 
-    fn create(portspec: &str, filter: Option<()>, flags: Self::Flags) -> anyhow::Result<(Self::Context, Self)>;
+    fn create(
+        portspec: &str,
+        filter: Option<()>,
+        flags: NethunsFlags,
+    ) -> anyhow::Result<(Self::Context, Self)>;
 
     fn context(&self) -> &Self::Context;
 }
 
+pub trait NethunsMetadata {}
 
-pub trait NethunsMetadata { }
-
-
-pub trait NethunsFlags<S: Strategy> {
-
-    fn strategy_args(&self) -> S::Args;
+#[derive(Clone, Debug)]
+pub enum StrategyArgsEnum {
+    Std(StdArgs),
+    Mpsc(MpscArgs),
+    Crossbeam(CrossbeamArgs),
 }
 
-// pub enum NethunsFlags {
-//     Netmap(NetmapFlags),
-//     AfXdp(AfXdpFlags),
-// }
+#[derive(Clone, Debug)]
+pub enum NethunsFlags {
+    Netmap(NetmapFlags),
+    AfXdp(AfXdpFlags),
+}
