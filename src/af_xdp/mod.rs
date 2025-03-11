@@ -455,7 +455,6 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
     type Flags = AfXdpFlags<S>;
     type Metadata = Metadata;
 
-    #[inline(never)]
     fn recv(&mut self) -> anyhow::Result<(Self::Token, Self::Metadata)> {
         let mut rx = self.xsk.borrow_mut();
         if let Some(slot) = rx.rx_mut().next() {
@@ -518,7 +517,7 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
             prod.push(BufferIndex::from((i as u32) * FRAME_SIZE as u32));
         }
         {
-            let mut prod: &mut <S as Strategy>::Producer = &mut *ctx.producer.borrow_mut();
+            let prod: &mut <S as Strategy>::Producer = &mut *ctx.producer.borrow_mut();
             prod.flush();
         }
         let mut umem_manager = UmemManager::create_with_buffer(umem.clone(), consumer)?;

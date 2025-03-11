@@ -13,7 +13,7 @@ impl Strategy for MpscStrategy {
     type Args = MpscArgs;
 
     fn create(args: Self::Args) -> (Self::Producer, Self::Consumer) {
-        let (producer, consumer) = mpsc::channel(args.buffer_size);
+        let (producer, consumer) = mpsc::channel(args.buffer_size, args.consumer_buffer_size);
         (MpscProducer { inner: producer }, MpscConsumer { inner: consumer })
     }
 }
@@ -21,13 +21,15 @@ impl Strategy for MpscStrategy {
 #[derive(Clone)]
 pub struct MpscArgs {
     pub buffer_size: usize,
+    pub consumer_buffer_size: usize,
 }
 
 const DEFAULT_BUFFER_SIZE: usize = 1024;
+const DEFAULT_CONSUMER_BUFFER_SIZE: usize = 256;
 
 impl Default for MpscArgs {
     fn default() -> Self {
-        Self { buffer_size: DEFAULT_BUFFER_SIZE }
+        Self { buffer_size: DEFAULT_BUFFER_SIZE, consumer_buffer_size: DEFAULT_CONSUMER_BUFFER_SIZE }
     }
 }
 

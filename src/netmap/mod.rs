@@ -1,14 +1,11 @@
 use crate::api::{
     BufferConsumer, BufferIndex, BufferProducer, NethunsContext, NethunsFlags, NethunsMetadata, NethunsPayload, NethunsSocket, NethunsToken, Strategy
 };
-use crate::strategy::MpscArgs;
 use anyhow::{Result, bail};
-use mpsc::Producer;
 use netmap_rs::context::{BufferPool, Port, Receiver, RxBuf, Transmitter, TxBuf};
 use nix::sys::time::TimeVal;
 use std::cell::RefCell;
 use std::mem::ManuallyDrop;
-use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -301,9 +298,6 @@ impl<S: Strategy> Socket<S> {
         Ok((ManuallyDrop::into_inner(packet_token), Metadata {}))
     }
 
-    //pub fn create(portspec: &str, extra_buf: usize, filter: Option<Filter>) -> Result<(Context, Self)> {
-    //
-    //}
 }
 
 impl<S: Strategy> NethunsSocket<S> for Socket<S> {

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
-use strategy::MpscStrategy;
+use strategy::{MpscArgs, MpscStrategy};
 
 // Framework-specific flag structures.
 pub struct AfXdpFlags {
@@ -66,6 +66,9 @@ struct NetmapArgs {
     /// Extra buffer size for netmap.
     #[clap(long, default_value_t = 1024)]
     extra_buf: usize,
+
+    #[clap(long, default_value_t = 256)]
+    consumer_buffer_size: usize,
 }
 
 /// AF_XDP-specific arguments.
@@ -293,7 +296,10 @@ fn main() -> Result<()> {
             run::<MpscStrategy, netmap::Socket<_>>(
                 netmap::NetmapFlags {
                     extra_buf: netmap_args.extra_buf,
-                    strategy_args: None,
+                    strategy_args: Some(MpscArgs {
+                        buffer_size: netmap_args.extra_buf,
+                        consumer_buffer_size: netmap_args.consumer_buffer_size,
+                    })
                 },
                 &args,
             )?;

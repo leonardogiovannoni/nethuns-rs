@@ -30,20 +30,21 @@ impl<T> Consumer<T> {
 
 
 
-const BUFFER_LEN: usize = 256;
+
 pub struct Producer<T> {
     elem: spsc::Producer<T>,
-    buffer: arrayvec::ArrayVec<T, BUFFER_LEN>,
+    // buffer: arrayvec::ArrayVec<T, BUFFER_LEN>,
+    buffer: Vec<T>,
     list: ConsumerList<T>,
 }
 
 impl<T> Producer<T> {
 
-    fn new(elem: spsc::Producer<T>, list: ConsumerList<T>) -> Self {
+    fn new(elem: spsc::Producer<T>, list: ConsumerList<T>, buffer_capacity: usize) -> Self {
         Self {
             elem,
-            buffer: arrayvec::ArrayVec::new(),
-            // Vec::with_capacity(BUFFER_LEN),
+            // buffer: arrayvec::ArrayVec::new(),
+            buffer: Vec::with_capacity(buffer_capacity),
             list,
         }
     }
@@ -51,7 +52,7 @@ impl<T> Producer<T> {
     pub fn push(&mut self, elem: T) {
         // self.elem.enqueue(elem);
         self.buffer.push(elem);
-        if self.buffer.len() == BUFFER_LEN {
+        if self.buffer.len() == self.buffer.capacity() {    
             self.flush();
         }
     }
@@ -68,7 +69,7 @@ impl<T> Clone for Producer<T> {
         let (p, c) = spsc::Queue::new(self.list.queue_len).split();
         let list = self.list.clone();
         list.push(c);
-        Self::new(p, list)
+        Self::new(p, list, self.buffer.capacity())
     }
 }
 
@@ -79,7 +80,7 @@ impl<T> Drop for Producer<T> {
     }
 }
 
-pub fn channel<T>(size: usize) -> (Producer<T>, Consumer<T>) {
+pub fn channel<T>(size: usize, consumer_buffer_capacity: usize) -> (Producer<T>, Consumer<T>) {
     let list = ConsumerList::new(size);
     let (p, c) = spsc::Queue::new(size).split();
     list.push(c);
@@ -87,6 +88,7 @@ pub fn channel<T>(size: usize) -> (Producer<T>, Consumer<T>) {
         Producer::new(
             p,
             list.clone(),
+            consumer_buffer_capacity,
         ),
         Consumer {
             consumer: list,
@@ -101,7 +103,7 @@ mod tests {
     #[test]
     fn test() {
         const LEN: usize = 1024 * 1024 * 4;
-        let (producer, mut consumer) = channel(LEN);
+        let (producer, mut consumer) = channel(LEN, 256);
         let threads = num_cpus::get();
         let mut handles = Vec::new();
         let mut producers = Vec::new();
