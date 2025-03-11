@@ -16,6 +16,7 @@ nix = "0.29.0"
 num_cpus = "1.16.0"
 mpsc = { path = "mpsc" }
 libxdp-sys = "0.2.1"
+crossbeam-channel = "0.5.14"
 #libxdp-sys = { path = "libxdp-sys" }
 
 [profile.dev]

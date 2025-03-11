@@ -80,7 +80,7 @@ impl<T> Drop for Producer<T> {
     }
 }
 
-pub fn channel<T>(size: usize, consumer_buffer_capacity: usize) -> (Producer<T>, Consumer<T>) {
+pub fn channel<T>(size: usize, consumer_buffer_capacity: usize, producer_buffer_capacity: usize) -> (Producer<T>, Consumer<T>) {
     let list = ConsumerList::new(size);
     let (p, c) = spsc::Queue::new(size).split();
     list.push(c);
@@ -88,11 +88,11 @@ pub fn channel<T>(size: usize, consumer_buffer_capacity: usize) -> (Producer<T>,
         Producer::new(
             p,
             list.clone(),
-            consumer_buffer_capacity,
+            producer_buffer_capacity,
         ),
         Consumer {
             consumer: list,
-            cached: Vec::with_capacity(size),
+            cached: Vec::with_capacity(consumer_buffer_capacity),
         },
     )
 }
@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn test() {
         const LEN: usize = 1024 * 1024 * 4;
-        let (producer, mut consumer) = channel(LEN, 256);
+        let (producer, mut consumer) = channel(LEN, 256, 256);
         let threads = num_cpus::get();
         let mut handles = Vec::new();
         let mut producers = Vec::new();

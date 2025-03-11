@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
-use strategy::{MpscArgs, MpscStrategy};
+use strategy::{CrossbeamArgs, CrossbeamStrategy, MpscArgs, MpscStrategy, StdStrategy};
 
 // Framework-specific flag structures.
 pub struct AfXdpFlags {
@@ -69,6 +69,9 @@ struct NetmapArgs {
 
     #[clap(long, default_value_t = 256)]
     consumer_buffer_size: usize,
+
+    #[clap(long, default_value_t = 256)]
+    producer_buffer_size: usize,
 }
 
 /// AF_XDP-specific arguments.
@@ -299,10 +302,30 @@ fn main() -> Result<()> {
                     strategy_args: Some(MpscArgs {
                         buffer_size: netmap_args.extra_buf,
                         consumer_buffer_size: netmap_args.consumer_buffer_size,
+                        producer_buffer_size: netmap_args.producer_buffer_size,
                     })
                 },
                 &args,
             )?;
+
+//            run::<StdStrategy, netmap::Socket<_>>(
+//                netmap::NetmapFlags {
+//                    extra_buf: netmap_args.extra_buf,
+//                    strategy_args: None
+//                },
+//                &args,
+//            )?;
+
+//            run::<CrossbeamStrategy, netmap::Socket<_>>(
+//                netmap::NetmapFlags {
+//                    extra_buf: netmap_args.extra_buf,
+//                    strategy_args: Some(CrossbeamArgs {
+//                        buffer_size: netmap_args.extra_buf,
+//                    })
+//                },
+//                &args,
+//            )?;
+
         }
         Framework::AfXdp(af_xdp_args) => {
             run::<MpscStrategy, af_xdp::Socket<_>>(

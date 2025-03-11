@@ -64,6 +64,7 @@ impl<S: Strategy> Context<S> {
         for idx in indexes {
             producer.push(BufferIndex::from(idx));
         }
+        producer.flush();
         let res = Self {
             buffer_pool,
             producer: RefCell::new(producer),
