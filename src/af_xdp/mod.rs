@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use wrapper::{TxSlot, Umem, XdpDescData, XskSocket};
 
 // Constants from the C code
-const NUM_FRAMES: usize = 4096;
-const FRAME_SIZE: u64 = XSK_UMEM__DEFAULT_FRAME_SIZE as u64; // taken from libxdp binding
+const NUM_FRAMES: u32 = 4096;
+const FRAME_SIZE: u32 = XSK_UMEM__DEFAULT_FRAME_SIZE; // taken from libxdp binding
 const RX_BATCH_SIZE: u32 = 64;
 
 // Global variables (unsafe globals in Rust, used only during startup)
@@ -172,14 +172,14 @@ pub struct UmemArea {
 unsafe impl Send for UmemArea {}
 
 impl UmemArea {
-    fn new(packet_buffer_size: u64) -> Result<UmemArea, anyhow::Error> {
-        let packet_buffer = alloc_page_aligned(packet_buffer_size as usize)?;
+    fn new(packet_buffer_size: usize) -> Result<UmemArea, anyhow::Error> {
+        let packet_buffer = alloc_page_aligned(packet_buffer_size)?;
 
         let mem = Arc::new(UnsafeCell::new(packet_buffer));
 
         Ok(Self {
             mem,
-            size: packet_buffer_size as usize,
+            size: packet_buffer_size,
         })
     }
 
@@ -204,9 +204,9 @@ impl<S: api::Strategy> UmemManager<S> {
     }
 
     /// Allocates one frame address from our free array.
-    fn alloc_frame(&mut self) -> Option<u64> {
+    fn alloc_frame(&mut self) -> Option<u32> {
         // self.frames.pop()
-        self.consumer.pop().map(|idx| u32::from(idx) as u64)
+        self.consumer.pop().map(|idx| u32::from(idx))
     }
 
     // Lo userei quando fallisce in qualche modo la read o la write
@@ -241,7 +241,7 @@ impl<S: api::Strategy> UmemManager<S> {
             let addr = self.alloc_frame().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::Other, "refill_fill_ring: no free frames")
             })?;
-            *self.umem.ring_prod_mut().get_addr(idx + i) = addr;
+            *self.umem.ring_prod_mut().get_addr(idx + i) = addr as u64;
         }
 
         self.umem.ring_prod_mut().submit(available);
@@ -275,7 +275,7 @@ fn complete_tx<S: api::Strategy>(xsk: &Sock<S>) -> io::Result<()> {
 pub struct Tok<S: api::Strategy> {
     idx: api::BufferIndex,
     len: u32,
-    buffer_pool: u32,
+    buffer_pool: usize,
     _marker: std::marker::PhantomData<S>,
 }
 
@@ -284,7 +284,8 @@ impl<S: api::Strategy> api::Token for Tok<S> {
 }
 
 impl<S: api::Strategy> Tok<S> {
-    fn new(idx: u32, buffer_pool: u32, len: u32) -> ManuallyDrop<Self> {
+    fn new(idx: u64, buffer_pool: usize, len: u32) -> ManuallyDrop<Self> {
+        let idx: u32 = idx.try_into().unwrap();
         let idx = api::BufferIndex::from(idx);
         ManuallyDrop::new(Self {
             idx,
@@ -343,7 +344,7 @@ impl<S: api::Strategy> Sock<S> {
     #[inline(always)]
     fn recv_inner(&self, slot: XdpDescData) -> Result<(Tok<S>, Meta)> {
         let offset = slot.offset;
-        let len = slot.len as usize;
+        let len = slot.len;
         let options = slot.options;
         // self.stats.update(|mut s| {
         //     s.rx_bytes += len as u64;
@@ -356,7 +357,7 @@ impl<S: api::Strategy> Sock<S> {
         self.stats.set(stats);
 
         let buffer_pool = self.ctx.index;
-        let token = Tok::new(offset as u32, buffer_pool as u32, len as u32);
+        let token = Tok::new(offset, buffer_pool, len);
         Ok((ManuallyDrop::into_inner(token), Meta {}))
     }
 
@@ -368,11 +369,11 @@ impl<S: api::Strategy> Sock<S> {
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No free frames for TX"))?;
 
         // Assign the descriptor’s address
-        *slot.offset_mut() = frame_addr;
+        *slot.offset_mut() = frame_addr as u64;
         *slot.len_mut() = payload.len() as u32;
 
         // Actually copy the packet into UMEM
-        let buffer_index = api::BufferIndex::from(frame_addr as u32);
+        let buffer_index = api::BufferIndex::from(frame_addr);
         let buf = unsafe { self.ctx.buffer(buffer_index, payload.len()) };
 
         unsafe {
@@ -439,7 +440,6 @@ impl<S: api::Strategy> Sock<S> {
 
 impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     type Context = Ctx<S>;
-   // type Token = PayloadToken<S>;
     type Metadata = Meta;
 
     fn recv(&mut self) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
@@ -499,8 +499,8 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         };
         let xdp_flags = flags.xdp_flags;
         let bind_flags = flags.bind_flags;
-        let umem_bytes_len = NUM_FRAMES as u64 * FRAME_SIZE;
-        let umem = UmemArea::new(umem_bytes_len)?;
+        let umem_bytes_len = NUM_FRAMES * FRAME_SIZE;
+        let umem = UmemArea::new(umem_bytes_len as usize)?;
         let (ctx, consumer) = pippo(umem.clone(), flags.strategy_args);
 
         for i in 0..NUM_FRAMES {
@@ -615,11 +615,6 @@ mod tests {
         let (ctx0, mut socket0) = Sock::<MpscStrategy>::create(
             "veth_test0:0",
             None,
-            // AfXdpFlags {
-            //     xdp_flags: 0,
-            //     bind_flags: 0,
-            //     strategy_args: None,
-            // },
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
@@ -630,11 +625,6 @@ mod tests {
         let (_, mut socket1) = Sock::<MpscStrategy>::create(
             "veth_test1:0",
             None,
-            // AfXdpFlags {
-            //     xdp_flags: 0,
-            //     bind_flags: 0,
-            //     strategy_args: None,
-            // },
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,

@@ -80,7 +80,7 @@ impl<S: api::Strategy> Ctx<S> {
     }
 
     fn check_token(&self, token: &Tok<S>) -> bool {
-        token.buffer_pool == self.index as u32
+        token.buffer_pool == self.index
     }
 
     fn peek_packet(&self, token: &Tok<S>) -> PacketData<'_, S> {
@@ -97,18 +97,6 @@ impl<S: api::Strategy> Ctx<S> {
 impl<S: api::Strategy> api::Context for Ctx<S> {
     //type Payload = Payload<'a>;
     type Token = Tok<S>;
-
-    //fn packet(&'a self, token: Self::Token) -> Payload<'a> {
-    //    if !self.check_token(&token) {
-    //        panic!("Invalid token");
-    //    }
-    //    let token = ManuallyDrop::new(token);
-    //    Payload {
-    //        packet_idx: token.idx,
-    //        pool: self,
-    //    }
-    //}
-
     fn release(&self, token: api::BufferIndex) {
         self.producer.borrow_mut().push(token);
     }
@@ -152,12 +140,12 @@ impl<'a, S: api::Strategy> RecvPacket<'a, S> {
 #[must_use]
 pub struct Tok<S: api::Strategy> {
     idx: api::BufferIndex,
-    buffer_pool: u32,
+    buffer_pool: usize,
     _strategy: std::marker::PhantomData<S>,
 }
 
 impl<S: api::Strategy> Tok<S> {
-    fn new(idx: u32, buffer_pool: u32) -> ManuallyDrop<Self> {
+    fn new(idx: u32, buffer_pool: usize) -> ManuallyDrop<Self> {
         let idx = api::BufferIndex::from(idx);
         ManuallyDrop::new(Self {
             idx,
@@ -287,7 +275,7 @@ impl<S: api::Strategy> Sock<S> {
             slot.update_buffer(|x| *x = u32::from(free_idx));
         }
 
-        let packet_token = Tok::new(pkt_idx, self.ctx.index as u32);
+        let packet_token = Tok::new(pkt_idx, self.ctx.index);
 
         if let Some(filter) = self.filter.as_ref() {
             let aliased_packet = self.ctx.peek_packet(&packet_token);
@@ -323,7 +311,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     fn send(&mut self, packet: &[u8]) -> Result<()> {
         let mut tx = self.tx.borrow_mut();
         if let Some(next) = tx.iter_mut().next() {
-            self.send_inner(next, packet)
+             self.send_inner(next, packet)
         } else {
             // SAFETY: there are no `TxBuf`s, and so any `Slot`s, in use
             unsafe {
@@ -354,7 +342,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             api::Flags::Netmap(flags) => flags,
             _ => panic!("Invalid flags"),
         };
-        let mut port = Port::open(portspec, flags.extra_buf as u32)?;
+        let mut port = Port::open(portspec, flags.extra_buf)?;
         let extra_bufs = unsafe { port.extra_buffers_indexes() };
         let (tx, rx, buffer_pool) = port.split();
         let (ctx, consumer) = Ctx::new(buffer_pool, extra_bufs, flags.strategy_args);
@@ -377,10 +365,43 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
 
 #[derive(Clone, Debug)]
 pub struct NetmapFlags {
-    pub extra_buf: usize,
+    pub extra_buf: u32,
     pub strategy_args: api::StrategyArgs,
 }
 
 pub struct Meta {}
 
 impl api::Metadata for Meta {}
+
+#[cfg(test)]
+mod tests {
+    use crate::{api::{self, Flags, Socket}, netmap::Sock, strategy::{MpscArgs, MpscStrategy}};
+    use super::*;
+
+    #[test]
+    fn test_send_with_flush() {
+        let (ctx0, mut socket0) = Sock::<MpscStrategy>::create(
+            "vale0:0",
+            None,
+            Flags::Netmap(NetmapFlags {
+                
+                extra_buf: 1024,
+                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+            }),
+        )
+        .unwrap();
+        let (_, mut socket1) = Sock::<MpscStrategy>::create(
+            "vale0:1",
+            None,
+            Flags::Netmap(NetmapFlags {
+                extra_buf: 1024,
+                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+            }),
+        )
+        .unwrap();
+        socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();
+        socket1.flush();
+        let (packet, meta) = socket0.recv_local().unwrap();
+        assert_eq!(&packet[..20], b"Helloworldmyfriend\0\0");
+    }
+}

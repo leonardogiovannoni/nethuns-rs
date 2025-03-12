@@ -6,7 +6,7 @@ use crate::{
     strategy::{CrossbeamArgs, MpscArgs, StdArgs},
 };
 
-pub trait Strategy: Clone + 'static {
+pub trait Strategy: Send + Clone + 'static {
     type Producer: BufferProducer;
     type Consumer: BufferConsumer;
     fn create(args: StrategyArgs) -> (Self::Producer, Self::Consumer);
@@ -40,7 +40,7 @@ impl From<BufferIndex> for u32 {
 
 /// A token returned by a receive operation. In both implementations,
 /// the token carries the buffer index (and, optionally, metadata).
-pub trait Token: Sized {
+pub trait Token: Sized + Send {
     /// Which context type produced this token?
     type Context: Context<Token = Self>;
 
