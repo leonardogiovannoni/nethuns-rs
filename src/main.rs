@@ -4,7 +4,7 @@ mod netmap;
 mod strategy;
 mod fake_refcell;
 use anyhow::{Result, bail};
-use api::{NethunsFlags, Socket, Token, Strategy, StrategyArgs};
+use api::{Flags, Socket, Token, Strategy, StrategyArgs};
 use clap::{Parser, Subcommand};
 use etherparse::{NetHeaders, PacketHeaders};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -108,7 +108,7 @@ fn print_addrs(frame: &[u8]) -> Result<String> {
 }
 
 fn run<Sock: Socket<S> + 'static, S: Strategy>(
-    flags: NethunsFlags,
+    flags: Flags,
     args: &Args,
 ) -> Result<()> {
     println!("Test {} started with parameters:", args.interface);
@@ -297,7 +297,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
     match &args.framework {
         Framework::Netmap(netmap_args) => {
-            let flags = NethunsFlags::Netmap(netmap::NetmapFlags {
+            let flags = Flags::Netmap(netmap::NetmapFlags {
                 extra_buf: netmap_args.extra_buf,
                 strategy_args: StrategyArgs::Mpsc(MpscArgs {
                     buffer_size: netmap_args.extra_buf,
@@ -308,7 +308,7 @@ fn main() -> Result<()> {
             run::<netmap::Sock<MpscStrategy>, _>(flags, &args)?;
         }
         Framework::AfXdp(af_xdp_args) => {
-            let flags = NethunsFlags::AfXdp(af_xdp::AfXdpFlags {
+            let flags = Flags::AfXdp(af_xdp::AfXdpFlags {
                 bind_flags: af_xdp_args.bind_flags,
                 xdp_flags: af_xdp_args.xdp_flags,
                 strategy_args: StrategyArgs::Mpsc(MpscArgs {

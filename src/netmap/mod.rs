@@ -348,10 +348,10 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     fn create(
         portspec: &str,
         filter: Option<()>,
-        flags: api::NethunsFlags,
+        flags: api::Flags,
     ) -> anyhow::Result<(Self::Context, Self)> {
         let flags = match flags {
-            api::NethunsFlags::Netmap(flags) => flags,
+            api::Flags::Netmap(flags) => flags,
             _ => panic!("Invalid flags"),
         };
         let mut port = Port::open(portspec, flags.extra_buf as u32)?;

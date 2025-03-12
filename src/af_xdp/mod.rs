@@ -491,10 +491,10 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     fn create(
         portspec: &str,
         filter: Option<()>,
-        flags: api::NethunsFlags,
+        flags: api::Flags,
     ) -> anyhow::Result<(Self::Context, Self)> {
         let flags = match flags {
-            api::NethunsFlags::AfXdp(flags) => flags,
+            api::Flags::AfXdp(flags) => flags,
             _ => panic!("Invalid flags"),
         };
         let xdp_flags = flags.xdp_flags;
@@ -596,7 +596,7 @@ impl api::Metadata for Meta {}
 #[cfg(test)]
 mod tests {
     use crate::{
-        api::{NethunsFlags, Socket},
+        api::{Flags, Socket},
         strategy::{MpscArgs, MpscStrategy},
     };
 
@@ -620,7 +620,7 @@ mod tests {
             //     bind_flags: 0,
             //     strategy_args: None,
             // },
-            NethunsFlags::AfXdp(AfXdpFlags {
+            Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
@@ -635,7 +635,7 @@ mod tests {
             //     bind_flags: 0,
             //     strategy_args: None,
             // },
-            NethunsFlags::AfXdp(AfXdpFlags {
+            Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),

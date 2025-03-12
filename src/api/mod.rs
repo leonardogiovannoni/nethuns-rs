@@ -116,7 +116,7 @@ pub trait Socket<S: Strategy>: Send + Sized {
     fn create(
         portspec: &str,
         filter: Option<()>,
-        flags: NethunsFlags,
+        flags: Flags,
     ) -> anyhow::Result<(Self::Context, Self)>;
 
     fn context(&self) -> &Self::Context;
@@ -132,7 +132,7 @@ pub enum StrategyArgs {
 }
 
 #[derive(Clone, Debug)]
-pub enum NethunsFlags {
+pub enum Flags {
     Netmap(NetmapFlags),
     AfXdp(AfXdpFlags),
 }
