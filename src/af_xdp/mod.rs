@@ -1,8 +1,5 @@
 mod wrapper;
-use crate::api::{
-    BufferConsumer, BufferIndex, BufferProducer, NethunsContext, NethunsFlags, NethunsMetadata,
-    NethunsPayload, NethunsSocket, NethunsToken, Strategy, StrategyArgsEnum,
-};
+use crate::api::{self, BufferConsumer, BufferProducer};
 use anyhow::{Result, bail};
 use libc::{self, _SC_PAGESIZE, sysconf};
 use libxdp_sys::XSK_UMEM__DEFAULT_FRAME_SIZE;
@@ -38,24 +35,21 @@ pub fn resultify(x: i32) -> io::Result<u32> {
 }
 
 #[derive(Clone)]
-pub struct Context<S: Strategy> {
+pub struct Ctx<S: api::Strategy> {
     buffer: UmemArea,
     producer: RefCell<S::Producer>,
     index: usize,
 }
 
-pub struct Payload<'a, S: Strategy> {
-    packet_idx: BufferIndex,
+pub struct PacketData<'a, S: api::Strategy> {
+    packet_idx: api::BufferIndex,
     size: usize,
-    pool: &'a Context<S>,
+    pool: &'a Ctx<S>,
 }
 
-impl<'a, S: Strategy> NethunsPayload<'a> for Payload<'a, S> {
-    type Context = Context<S>;
-    type Token = PayloadToken<S>;
-}
+impl<'a, S: api::Strategy> api::Payload<'a> for PacketData<'a, S> {}
 
-impl<'a, S: Strategy> Payload<'a, S> {
+impl<'a, S: api::Strategy> PacketData<'a, S> {
     fn as_slice(&self) -> &[u8] {
         let token = self.packet_idx;
         let buf = unsafe { self.pool.buffer(token, self.size) };
@@ -69,19 +63,19 @@ impl<'a, S: Strategy> Payload<'a, S> {
     }
 }
 
-impl<S: Strategy> AsRef<[u8]> for Payload<'_, S> {
+impl<S: api::Strategy> AsRef<[u8]> for PacketData<'_, S> {
     fn as_ref(&self) -> &[u8] {
         self.as_slice()
     }
 }
 
-impl<S: Strategy> AsMut<[u8]> for Payload<'_, S> {
+impl<S: api::Strategy> AsMut<[u8]> for PacketData<'_, S> {
     fn as_mut(&mut self) -> &mut [u8] {
         self.as_mut_slice()
     }
 }
 
-impl<S: Strategy> Deref for Payload<'_, S> {
+impl<S: api::Strategy> Deref for PacketData<'_, S> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -89,24 +83,24 @@ impl<S: Strategy> Deref for Payload<'_, S> {
     }
 }
 
-impl<S: Strategy> DerefMut for Payload<'_, S> {
+impl<S: api::Strategy> DerefMut for PacketData<'_, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
     }
 }
 
-impl<'a, S: Strategy> Drop for Payload<'a, S> {
+impl<'a, S: api::Strategy> Drop for PacketData<'a, S> {
     fn drop(&mut self) {
         self.pool.release(self.packet_idx);
     }
 }
 
-fn pippo<S: Strategy>(buffer_pool: UmemArea, args: StrategyArgsEnum) -> (Context<S>, S::Consumer) {
+fn pippo<S: api::Strategy>(buffer_pool: UmemArea, args: api::StrategyArgs) -> (Ctx<S>, S::Consumer) {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let (producer, cons) = S::create(args);
-    // mpsc::channel::<BufferIndex>(buffer_pool.size as usize);
+    // mpsc::channel::<api::BufferIndex>(buffer_pool.size as usize);
     let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let res = Context {
+    let res = Ctx {
         buffer: buffer_pool, //: Arc::new(buffer_pool),
         producer: RefCell::new(producer),
         index: counter,
@@ -114,11 +108,11 @@ fn pippo<S: Strategy>(buffer_pool: UmemArea, args: StrategyArgsEnum) -> (Context
     (res, cons)
 }
 
-impl<S: Strategy> Context<S> {
-    fn new(buffer_pool: UmemArea, args: StrategyArgsEnum) -> (Self, S::Consumer) {
+impl<S: api::Strategy> Ctx<S> {
+    fn new(buffer_pool: UmemArea, args: api::StrategyArgs) -> (Self, S::Consumer) {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let (producer, cons) = S::create(args);
-        // mpsc::channel::<BufferIndex>(buffer_pool.size as usize);
+        // mpsc::channel::<api::BufferIndex>(buffer_pool.size as usize);
         let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
         let res = Self {
             buffer: buffer_pool, //: Arc::new(buffer_pool),
@@ -128,7 +122,7 @@ impl<S: Strategy> Context<S> {
         (res, cons)
     }
 
-    unsafe fn buffer(&self, idx: BufferIndex, size: usize) -> *mut [u8] {
+    unsafe fn buffer(&self, idx: api::BufferIndex, size: usize) -> *mut [u8] {
         let (ptr, _) = self.buffer.raw_parts();
         let offset = u32::from(idx) as usize;
         unsafe {
@@ -137,25 +131,25 @@ impl<S: Strategy> Context<S> {
         }
     }
 
-    fn release(&self, idx: BufferIndex) {
+    fn release(&self, idx: api::BufferIndex) {
         self.producer.borrow_mut().push(idx);
     }
 }
 
-impl<S: Strategy> NethunsContext for Context<S> {
-    type Token = PayloadToken<S>;
+impl<S: api::Strategy> api::Context for Ctx<S> {
+    type Token = Tok<S>;
 
-    type Payload<'ctx> = Payload<'ctx, S>;
+    type Payload<'ctx> = PacketData<'ctx, S>;
 
     fn packet<'ctx>(&'ctx self, token: Self::Token) -> Self::Payload<'ctx> {
-        Payload {
+        PacketData {
             packet_idx: token.idx,
             size: token.len as usize,
             pool: self,
         }
     }
 
-    fn release(&self, buf_idx: BufferIndex) {
+    fn release(&self, buf_idx: api::BufferIndex) {
         self.producer.borrow_mut().push(buf_idx);
     }
 }
@@ -196,12 +190,12 @@ impl UmemArea {
 
 /// Wraps the XDP UMEM info.
 /// Now handles fill/completion ring and frame addresses internally.
-struct UmemManager<S: Strategy> {
+struct UmemManager<S: api::Strategy> {
     umem: Umem,
     consumer: S::Consumer,
 }
 
-impl<S: Strategy> UmemManager<S> {
+impl<S: api::Strategy> UmemManager<S> {
     pub fn create_with_buffer(umem: UmemArea, consumer: S::Consumer) -> Result<Self> {
         Ok(Self {
             umem: Umem::new(umem)?,
@@ -255,7 +249,7 @@ impl<S: Strategy> UmemManager<S> {
     }
 } //
 
-fn complete_tx<S: Strategy>(xsk: &Socket<S>) -> io::Result<()> {
+fn complete_tx<S: api::Strategy>(xsk: &Sock<S>) -> io::Result<()> {
     let umem = &mut xsk.umem_manager.borrow_mut().umem;
     let (completed, mut idx) = umem.ring_cons_mut().peek(64);
     if completed == 0 {
@@ -269,7 +263,7 @@ fn complete_tx<S: Strategy>(xsk: &Socket<S>) -> io::Result<()> {
         xsk.ctx
             .producer
             .borrow_mut()
-            .push(BufferIndex::from(addr as u32));
+            .push(api::BufferIndex::from(addr as u32));
     }
     umem.ring_cons_mut().release(completed);
     // Also be sure to flush your free list if you’re using e.g. a lockfree ring
@@ -278,27 +272,20 @@ fn complete_tx<S: Strategy>(xsk: &Socket<S>) -> io::Result<()> {
     Ok(())
 }
 
-pub struct PayloadToken<S: Strategy> {
-    idx: BufferIndex,
+pub struct Tok<S: api::Strategy> {
+    idx: api::BufferIndex,
     len: u32,
     buffer_pool: u32,
     _marker: std::marker::PhantomData<S>,
 }
 
-impl<S: Strategy> NethunsToken for PayloadToken<S> {
-    type Context = Context<S>;
-
-    fn load<'ctx>(
-        self,
-        ctx: &'ctx Self::Context,
-    ) -> <Self::Context as NethunsContext>::Payload<'ctx> {
-        ctx.packet(self)
-    }
+impl<S: api::Strategy> api::Token for Tok<S> {
+    type Context = Ctx<S>;
 }
 
-impl<S: Strategy> PayloadToken<S> {
+impl<S: api::Strategy> Tok<S> {
     fn new(idx: u32, buffer_pool: u32, len: u32) -> ManuallyDrop<Self> {
-        let idx = BufferIndex::from(idx);
+        let idx = api::BufferIndex::from(idx);
         ManuallyDrop::new(Self {
             idx,
             len,
@@ -307,9 +294,9 @@ impl<S: Strategy> PayloadToken<S> {
         })
     }
 
-    fn load(self, pool: &Context<S>) -> Payload<'_, S> {
-        pool.packet(self)
-    }
+    //fn load(self, pool: &Ctx<S>) -> PacketData<'_, S> {
+    //    pool.packet(self)
+    //}
 }
 
 struct Port {
@@ -343,8 +330,8 @@ impl Port {
 }
 
 /// Wraps an AF_XDP socket.
-pub struct Socket<S: Strategy> {
-    ctx: Context<S>,
+pub struct Sock<S: api::Strategy> {
+    ctx: Ctx<S>,
     xsk: RefCell<XskSocket>,
     outstanding_tx: u32,
     umem_manager: RefCell<UmemManager<S>>,
@@ -352,9 +339,9 @@ pub struct Socket<S: Strategy> {
     prev_stats: Cell<StatsRecord>,
 }
 
-impl<S: Strategy> Socket<S> {
+impl<S: api::Strategy> Sock<S> {
     #[inline(always)]
-    fn recv_inner(&self, slot: XdpDescData) -> Result<(PayloadToken<S>, Metadata)> {
+    fn recv_inner(&self, slot: XdpDescData) -> Result<(Tok<S>, Meta)> {
         let offset = slot.offset;
         let len = slot.len as usize;
         let options = slot.options;
@@ -369,8 +356,8 @@ impl<S: Strategy> Socket<S> {
         self.stats.set(stats);
 
         let buffer_pool = self.ctx.index;
-        let token = PayloadToken::new(offset as u32, buffer_pool as u32, len as u32);
-        Ok((ManuallyDrop::into_inner(token), Metadata {}))
+        let token = Tok::new(offset as u32, buffer_pool as u32, len as u32);
+        Ok((ManuallyDrop::into_inner(token), Meta {}))
     }
 
     fn send_inner<'a>(&self, mut slot: TxSlot<'a>, payload: &[u8]) -> Result<()> {
@@ -385,7 +372,7 @@ impl<S: Strategy> Socket<S> {
         *slot.len_mut() = payload.len() as u32;
 
         // Actually copy the packet into UMEM
-        let buffer_index = BufferIndex::from(frame_addr as u32);
+        let buffer_index = api::BufferIndex::from(frame_addr as u32);
         let buf = unsafe { self.ctx.buffer(buffer_index, payload.len()) };
 
         unsafe {
@@ -450,12 +437,12 @@ impl<S: Strategy> Socket<S> {
     }
 }
 
-impl<S: Strategy> NethunsSocket<S> for Socket<S> {
-    type Context = Context<S>;
-    type Token = PayloadToken<S>;
-    type Metadata = Metadata;
+impl<S: api::Strategy> api::Socket<S> for Sock<S> {
+    type Context = Ctx<S>;
+   // type Token = PayloadToken<S>;
+    type Metadata = Meta;
 
-    fn recv(&mut self) -> anyhow::Result<(Self::Token, Self::Metadata)> {
+    fn recv(&mut self) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
         let mut rx = self.xsk.borrow_mut();
         if let Some(slot) = rx.rx_mut().next() {
             self.recv_inner(slot)
@@ -504,10 +491,10 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
     fn create(
         portspec: &str,
         filter: Option<()>,
-        flags: NethunsFlags,
+        flags: api::NethunsFlags,
     ) -> anyhow::Result<(Self::Context, Self)> {
         let flags = match flags {
-            NethunsFlags::AfXdp(flags) => flags,
+            api::NethunsFlags::AfXdp(flags) => flags,
             _ => panic!("Invalid flags"),
         };
         let xdp_flags = flags.xdp_flags;
@@ -517,11 +504,11 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
         let (ctx, consumer) = pippo(umem.clone(), flags.strategy_args);
 
         for i in 0..NUM_FRAMES {
-            let prod: &mut <S as Strategy>::Producer = &mut *ctx.producer.borrow_mut();
-            prod.push(BufferIndex::from((i as u32) * FRAME_SIZE as u32));
+            let prod: &mut <S as api::Strategy>::Producer = &mut *ctx.producer.borrow_mut();
+            prod.push(api::BufferIndex::from((i as u32) * FRAME_SIZE as u32));
         }
         {
-            let prod: &mut <S as Strategy>::Producer = &mut *ctx.producer.borrow_mut();
+            let prod: &mut <S as api::Strategy>::Producer = &mut *ctx.producer.borrow_mut();
             prod.flush();
         }
         let mut umem_manager = UmemManager::create_with_buffer(umem.clone(), consumer)?;
@@ -561,7 +548,7 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
 pub struct AfXdpFlags {
     pub bind_flags: u16,
     pub xdp_flags: u32,
-    pub strategy_args: StrategyArgsEnum,
+    pub strategy_args: api::StrategyArgs,
 }
 
 /// Get the current time in nanoseconds (monotonic clock).
@@ -602,14 +589,14 @@ pub fn alloc_page_aligned(size: usize) -> io::Result<*mut u8> {
     }
 }
 
-pub struct Metadata {}
+pub struct Meta {}
 
-impl NethunsMetadata for Metadata {}
+impl api::Metadata for Meta {}
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        api::NethunsFlags,
+        api::{NethunsFlags, Socket},
         strategy::{MpscArgs, MpscStrategy},
     };
 
@@ -625,7 +612,7 @@ mod tests {
 
     #[test]
     fn test_send_with_flush() {
-        let (ctx0, mut socket0) = Socket::<MpscStrategy>::create(
+        let (ctx0, mut socket0) = Sock::<MpscStrategy>::create(
             "veth_test0:0",
             None,
             // AfXdpFlags {
@@ -636,11 +623,11 @@ mod tests {
             NethunsFlags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
-                strategy_args: StrategyArgsEnum::Mpsc(MpscArgs::default()),
+                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
             }),
         )
         .unwrap();
-        let (_, mut socket1) = Socket::<MpscStrategy>::create(
+        let (_, mut socket1) = Sock::<MpscStrategy>::create(
             "veth_test1:0",
             None,
             // AfXdpFlags {
@@ -651,7 +638,7 @@ mod tests {
             NethunsFlags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
-                strategy_args: StrategyArgsEnum::Mpsc(MpscArgs::default()),
+                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
             }),
         )
         .unwrap();

@@ -1,15 +1,16 @@
-use crate::api::{
-    BufferConsumer, BufferIndex, BufferProducer, NethunsContext, NethunsFlags, NethunsMetadata,
-    NethunsPayload, NethunsSocket, NethunsToken, Strategy, StrategyArgsEnum,
-};
+use crate::api::{self, BufferConsumer, BufferProducer, Context};
 use anyhow::{Result, bail};
 use netmap_rs::context::{BufferPool, Port, Receiver, RxBuf, Transmitter, TxBuf};
 use nix::sys::time::TimeVal;
 use std::cell::RefCell;
+//use std::cell::RefCell;
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+
+//type RefCell<T> = crate::fake_refcell::FakeRefCell<T>;
 
 #[derive(Clone, Copy, Debug)]
 struct U24Repr {
@@ -46,24 +47,24 @@ impl From<u32> for U24Repr {
 }
 
 #[derive(Clone)]
-pub struct Context<S: Strategy> {
+pub struct Ctx<S: api::Strategy> {
     buffer_pool: Arc<BufferPool>,
     producer: RefCell<S::Producer>,
     index: usize,
 }
 
-impl<S: Strategy> Context<S> {
+impl<S: api::Strategy> Ctx<S> {
     fn new(
         buffer_pool: BufferPool,
         indexes: Vec<u32>,
-        strategy_args: StrategyArgsEnum,
+        strategy_args: api::StrategyArgs,
     ) -> (Self, S::Consumer) {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let (mut producer, cons) = S::create(strategy_args);
         let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
         let buffer_pool = Arc::new(buffer_pool);
         for idx in indexes {
-            producer.push(BufferIndex::from(idx));
+            producer.push(api::BufferIndex::from(idx));
         }
         producer.flush();
         let res = Self {
@@ -74,28 +75,28 @@ impl<S: Strategy> Context<S> {
         (res, cons)
     }
 
-    unsafe fn buffer(&self, idx: BufferIndex) -> *mut [u8] {
+    unsafe fn buffer(&self, idx: api::BufferIndex) -> *mut [u8] {
         unsafe { self.buffer_pool.buffer(u32::from(idx) as usize) }
     }
 
-    fn check_token(&self, token: &PayloadToken<S>) -> bool {
+    fn check_token(&self, token: &Tok<S>) -> bool {
         token.buffer_pool == self.index as u32
     }
 
-    fn peek_packet(&self, token: &PayloadToken<S>) -> Payload<'_, S> {
+    fn peek_packet(&self, token: &Tok<S>) -> PacketData<'_, S> {
         if !self.check_token(token) {
             panic!("Invalid token");
         }
-        Payload {
+        PacketData {
             packet_idx: token.idx,
             pool: self,
         }
     }
 }
 
-impl<S: Strategy> NethunsContext for Context<S> {
+impl<S: api::Strategy> api::Context for Ctx<S> {
     //type Payload = Payload<'a>;
-    type Token = PayloadToken<S>;
+    type Token = Tok<S>;
 
     //fn packet(&'a self, token: Self::Token) -> Payload<'a> {
     //    if !self.check_token(&token) {
@@ -108,18 +109,18 @@ impl<S: Strategy> NethunsContext for Context<S> {
     //    }
     //}
 
-    fn release(&self, token: BufferIndex) {
+    fn release(&self, token: api::BufferIndex) {
         self.producer.borrow_mut().push(token);
     }
 
-    type Payload<'ctx> = Payload<'ctx, S>;
+    type Payload<'ctx> = PacketData<'ctx, S>;
 
     fn packet<'ctx>(&'ctx self, token: Self::Token) -> Self::Payload<'ctx> {
         if !self.check_token(&token) {
             panic!("Invalid token");
         }
         let token = ManuallyDrop::new(token);
-        Payload {
+        PacketData {
             packet_idx: token.idx,
             pool: self,
         }
@@ -133,12 +134,12 @@ struct PacketHeader {
     ts: TimeVal,
 }
 
-pub struct RecvPacket<'a, S: Strategy> {
+pub struct RecvPacket<'a, S: api::Strategy> {
     ts: TimeVal,
-    payload: Payload<'a, S>,
+    payload: PacketData<'a, S>,
 }
 
-impl<'a, S: Strategy> RecvPacket<'a, S> {
+impl<'a, S: api::Strategy> RecvPacket<'a, S> {
     fn payload(&self) -> &[u8] {
         self.payload.as_slice()
     }
@@ -149,15 +150,15 @@ impl<'a, S: Strategy> RecvPacket<'a, S> {
 }
 
 #[must_use]
-pub struct PayloadToken<S: Strategy> {
-    idx: BufferIndex,
+pub struct Tok<S: api::Strategy> {
+    idx: api::BufferIndex,
     buffer_pool: u32,
     _strategy: std::marker::PhantomData<S>,
 }
 
-impl<S: Strategy> PayloadToken<S> {
+impl<S: api::Strategy> Tok<S> {
     fn new(idx: u32, buffer_pool: u32) -> ManuallyDrop<Self> {
-        let idx = BufferIndex::from(idx);
+        let idx = api::BufferIndex::from(idx);
         ManuallyDrop::new(Self {
             idx,
             buffer_pool,
@@ -166,11 +167,11 @@ impl<S: Strategy> PayloadToken<S> {
     }
 }
 
-impl<S: Strategy> NethunsToken for PayloadToken<S> {
-    type Context = Context<S>;
+impl<S: api::Strategy> api::Token for Tok<S> {
+    type Context = Ctx<S>;
 }
 
-impl<S: Strategy> Drop for PayloadToken<S> {
+impl<S: api::Strategy> Drop for Tok<S> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
             panic!("PacketToken must be used");
@@ -178,31 +179,28 @@ impl<S: Strategy> Drop for PayloadToken<S> {
     }
 }
 
-pub struct Socket<S: Strategy> {
+pub struct Sock<S: api::Strategy> {
     tx: RefCell<Transmitter>,
     rx: RefCell<Receiver>,
-    ctx: Context<S>,
+    ctx: Ctx<S>,
     consumer: RefCell<S::Consumer>,
     filter: Option<Filter>,
 }
 
-impl<S: Strategy> std::fmt::Debug for Socket<S> {
+impl<S: api::Strategy> std::fmt::Debug for Sock<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Socket").finish()
     }
 }
 
-pub struct Payload<'a, S: Strategy> {
-    packet_idx: BufferIndex,
-    pool: &'a Context<S>,
+pub struct PacketData<'a, S: api::Strategy> {
+    packet_idx: api::BufferIndex,
+    pool: &'a Ctx<S>,
 }
 
-impl<'a, S: Strategy> NethunsPayload<'a> for Payload<'a, S> {
-    type Context = Context<S>;
-    type Token = PayloadToken<S>;
-}
+impl<'a, S: api::Strategy> api::Payload<'a> for PacketData<'a, S> {}
 
-impl<'a, S: Strategy> Payload<'a, S> {
+impl<'a, S: api::Strategy> PacketData<'a, S> {
     fn as_slice(&self) -> &[u8] {
         let token = self.packet_idx;
         let buf = unsafe { self.pool.buffer(token) };
@@ -216,7 +214,7 @@ impl<'a, S: Strategy> Payload<'a, S> {
     }
 }
 
-impl<S: Strategy> Deref for Payload<'_, S> {
+impl<S: api::Strategy> Deref for PacketData<'_, S> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -224,24 +222,24 @@ impl<S: Strategy> Deref for Payload<'_, S> {
     }
 }
 
-impl<S: Strategy> DerefMut for Payload<'_, S> {
+impl<S: api::Strategy> DerefMut for PacketData<'_, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
     }
 }
-impl<'a, S: Strategy> AsRef<[u8]> for Payload<'a, S> {
+impl<'a, S: api::Strategy> AsRef<[u8]> for PacketData<'a, S> {
     fn as_ref(&self) -> &[u8] {
         self.as_slice()
     }
 }
 
-impl<'a, S: Strategy> AsMut<[u8]> for Payload<'a, S> {
+impl<'a, S: api::Strategy> AsMut<[u8]> for PacketData<'a, S> {
     fn as_mut(&mut self) -> &mut [u8] {
         self.as_mut_slice()
     }
 }
 
-impl<'a, S: Strategy> Drop for Payload<'a, S> {
+impl<'a, S: api::Strategy> Drop for PacketData<'a, S> {
     fn drop(&mut self) {
         self.pool.release(self.packet_idx);
     }
@@ -261,12 +259,12 @@ impl Filter {
     }
 }
 
-impl<S: Strategy> Socket<S> {
+impl<S: api::Strategy> Sock<S> {
     #[inline(always)]
     fn send_inner(&self, scan: TxBuf<'_>, packet: &[u8]) -> Result<()> {
         let TxBuf { ref slot, .. } = scan;
         let token = slot.buf_idx();
-        let token = BufferIndex::from(token);
+        let token = api::BufferIndex::from(token);
         let buf = unsafe { self.ctx.buffer(token) };
         let buf = unsafe { &mut (*buf) };
         if packet.len() > buf.len() {
@@ -277,7 +275,7 @@ impl<S: Strategy> Socket<S> {
     }
 
     #[inline(always)]
-    fn recv_inner(&self, buf: RxBuf<'_>) -> Result<(PayloadToken<S>, Metadata)> {
+    fn recv_inner(&self, buf: RxBuf<'_>) -> Result<(Tok<S>, Meta)> {
         let RxBuf { slot, ts, .. } = buf;
         let free_idx = self
             .consumer
@@ -289,7 +287,7 @@ impl<S: Strategy> Socket<S> {
             slot.update_buffer(|x| *x = u32::from(free_idx));
         }
 
-        let packet_token = PayloadToken::new(pkt_idx, self.ctx.index as u32);
+        let packet_token = Tok::new(pkt_idx, self.ctx.index as u32);
 
         if let Some(filter) = self.filter.as_ref() {
             let aliased_packet = self.ctx.peek_packet(&packet_token);
@@ -297,16 +295,15 @@ impl<S: Strategy> Socket<S> {
                 bail!("Filter failed");
             }
         }
-        Ok((ManuallyDrop::into_inner(packet_token), Metadata {}))
+        Ok((ManuallyDrop::into_inner(packet_token), Meta {}))
     }
 }
 
-impl<S: Strategy> NethunsSocket<S> for Socket<S> {
-    type Context = Context<S>;
-    type Token = PayloadToken<S>;
-    type Metadata = Metadata;
+impl<S: api::Strategy> api::Socket<S> for Sock<S> {
+    type Context = Ctx<S>;
+    type Metadata = Meta;
 
-    fn recv(&mut self) -> anyhow::Result<(Self::Token, Self::Metadata)> {
+    fn recv(&mut self) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
         let mut rx = self.rx.borrow_mut();
         if let Some(tmp) = rx.iter_mut().next() {
             self.recv_inner(tmp)
@@ -351,16 +348,16 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
     fn create(
         portspec: &str,
         filter: Option<()>,
-        flags: NethunsFlags,
+        flags: api::NethunsFlags,
     ) -> anyhow::Result<(Self::Context, Self)> {
         let flags = match flags {
-            NethunsFlags::Netmap(flags) => flags,
+            api::NethunsFlags::Netmap(flags) => flags,
             _ => panic!("Invalid flags"),
         };
         let mut port = Port::open(portspec, flags.extra_buf as u32)?;
         let extra_bufs = unsafe { port.extra_buffers_indexes() };
         let (tx, rx, buffer_pool) = port.split();
-        let (ctx, consumer) = Context::new(buffer_pool, extra_bufs, flags.strategy_args);
+        let (ctx, consumer) = Ctx::new(buffer_pool, extra_bufs, flags.strategy_args);
         Ok((
             ctx.clone(),
             Self {
@@ -381,9 +378,9 @@ impl<S: Strategy> NethunsSocket<S> for Socket<S> {
 #[derive(Clone, Debug)]
 pub struct NetmapFlags {
     pub extra_buf: usize,
-    pub strategy_args: StrategyArgsEnum,
+    pub strategy_args: api::StrategyArgs,
 }
 
-pub struct Metadata {}
+pub struct Meta {}
 
-impl NethunsMetadata for Metadata {}
+impl api::Metadata for Meta {}

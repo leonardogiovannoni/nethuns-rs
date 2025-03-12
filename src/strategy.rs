@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 use crate::api::{
-    BufferConsumer, BufferIndex, BufferProducer, Strategy, StrategyArgs, StrategyArgsEnum,
+    BufferConsumer, BufferIndex, BufferProducer, Strategy, StrategyArgs,
 };
 
 #[derive(Clone)]
@@ -11,9 +11,9 @@ impl Strategy for MpscStrategy {
     type Producer = MpscProducer;
     type Consumer = MpscConsumer;
 
-    fn create(args: StrategyArgsEnum) -> (Self::Producer, Self::Consumer) {
+    fn create(args: StrategyArgs) -> (Self::Producer, Self::Consumer) {
         let args = match args {
-            StrategyArgsEnum::Mpsc(args) => args,
+            StrategyArgs::Mpsc(args) => args,
             _ => panic!("Invalid argument type"),
         };
         let (producer, consumer) = mpsc::channel(
@@ -49,7 +49,6 @@ impl Default for MpscArgs {
     }
 }
 
-impl StrategyArgs for MpscArgs {}
 
 pub struct MpscConsumer {
     inner: mpsc::Consumer<BufferIndex>,
@@ -93,9 +92,9 @@ impl Strategy for StdStrategy {
     type Producer = StdProducer;
     type Consumer = StdConsumer;
 
-    fn create(args: StrategyArgsEnum) -> (Self::Producer, Self::Consumer) {
+    fn create(args: StrategyArgs) -> (Self::Producer, Self::Consumer) {
         let args = match args {
-            StrategyArgsEnum::Std(args) => args,
+            StrategyArgs::Std(args) => args,
             _ => panic!("Invalid argument type"),
         };
         let (producer, consumer) = std::sync::mpsc::channel();
@@ -119,7 +118,6 @@ impl Default for StdArgs {
     }
 }
 
-impl StrategyArgs for StdArgs {}
 
 pub struct StdConsumer {
     inner: RefCell<std::sync::mpsc::Receiver<BufferIndex>>,
@@ -163,9 +161,9 @@ impl Strategy for CrossbeamStrategy {
     type Producer = CrossbeamProducer;
     type Consumer = CrossbeamConsumer;
 
-    fn create(args: StrategyArgsEnum) -> (Self::Producer, Self::Consumer) {
+    fn create(args: StrategyArgs) -> (Self::Producer, Self::Consumer) {
         let args = match args {
-            StrategyArgsEnum::Crossbeam(args) => args,
+            StrategyArgs::Crossbeam(args) => args,
             _ => panic!("Invalid argument type"),
         };
         let (producer, consumer) = crossbeam_channel::bounded(args.buffer_size);
@@ -189,7 +187,6 @@ impl Default for CrossbeamArgs {
     }
 }
 
-impl StrategyArgs for CrossbeamArgs {}
 
 pub struct CrossbeamConsumer {
     inner: crossbeam_channel::Receiver<BufferIndex>,
