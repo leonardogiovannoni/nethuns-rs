@@ -19,6 +19,9 @@ libxdp-sys = "0.2.1"
 crossbeam-channel = "0.5.14"
 crossbeam-queue = "0.3.12"
 ringbuf = "0.4.7"
+dpdk-sys = { path = "dpdk-sys" }
+rand = "0.9.0"
+
 #libxdp-sys = { path = "libxdp-sys" }
 
 [profile.dev]

@@ -13,17 +13,6 @@ use strategy::{CrossbeamArgs, CrossbeamStrategy, MpscArgs, MpscStrategy, StdStra
 
 use crate::{af_xdp, api, netmap, strategy};
 
-// Framework-specific flag structures.
-pub struct AfXdpFlags {
-    pub bind_flags: u16,
-    pub xdp_flags: u32,
-}
-
-pub struct NetmapFlags {
-    pub extra_buf: usize,
-}
-
-/// Command line options.
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
@@ -186,12 +175,12 @@ fn run<Sock: Socket<S> + 'static, S: Strategy>(
     const BULK: u64 = 10000;
     if args.multithreading {
         // One thread per socket.
-        for (i, (ctx, mut socket)) in sockets.into_iter().enumerate() {
+        for (i, mut socket) in sockets.into_iter().enumerate() {
             let term_thread = term.clone();
             let counter = totals[i].clone();
             let debug = args.debug;
             let handle = {
-                let ctx = ctx.clone();
+                let ctx = socket.context().clone();
                 thread::spawn(move || {
                     let mut local_counter = 0;
                     while !term_thread.load(Ordering::SeqCst) {
@@ -201,7 +190,7 @@ fn run<Sock: Socket<S> + 'static, S: Strategy>(
                             local_counter = 0;
                         }
                         let res: Result<()> = (|| {
-                            let (pkt, meta) = socket.recv_local()?;
+                            let (pkt, meta) = socket.recv()?;
                             if debug {
                                 if let Ok(info) = print_addrs(&pkt) {
                                     println!("Thread {}: {}", i, info);
@@ -225,10 +214,10 @@ fn run<Sock: Socket<S> + 'static, S: Strategy>(
         let handle = thread::spawn(move || {
             let mut local_counters = vec![0; sockets.len()];
             while !term_loop.load(Ordering::SeqCst) {
-                for (i, (ctx, socket)) in sockets.iter_mut().enumerate() {
+                for (i, socket) in sockets.iter_mut().enumerate() {
                     let res: Result<()> = (|| {
                         // let packet = &*socket.recv()?.load(&ctx);
-                        let (packet, meta) = socket.recv_local()?;
+                        let (packet, meta) = socket.recv()?;
                         local_counters[i] += 1;
                         if local_counters[i] == BULK {
                             totals[i].fetch_add(local_counters[i], Ordering::SeqCst);

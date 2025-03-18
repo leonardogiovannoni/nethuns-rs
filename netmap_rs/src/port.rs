@@ -3,11 +3,11 @@ use std::ffi::CString;
 
 use anyhow::Result;
 use anyhow::bail;
-use netmap_sys::bindings::nmport_close;
-use netmap_sys::bindings::nmport_d;
-use netmap_sys::bindings::nmport_open;
-use netmap_sys::bindings::nmport_open_desc;
-use netmap_sys::bindings::nmport_prepare;
+use netmap_sys::nmport_close;
+use netmap_sys::nmport_d;
+use netmap_sys::nmport_open;
+use netmap_sys::nmport_open_desc;
+use netmap_sys::nmport_prepare;
 
 use crate::context::Receiver;
 use crate::context::Transmitter;

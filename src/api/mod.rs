@@ -1,9 +1,7 @@
-use std::ops::{Deref, DerefMut};
+use std::{mem::ManuallyDrop, ops::{Deref, DerefMut}};
 
 use crate::{
-    af_xdp::AfXdpFlags,
-    netmap::NetmapFlags,
-    strategy::{CrossbeamArgs, MpscArgs, StdArgs},
+    af_xdp::AfXdpFlags, dpdk::DpdkFlags, netmap::NetmapFlags, strategy::{CrossbeamArgs, MpscArgs, MpscStrategy, StdArgs}
 };
 
 pub trait Strategy: Send + Clone + 'static {
@@ -24,17 +22,80 @@ pub trait BufferConsumer: Send {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct BufferIndex(u32);
+pub struct BufferIndex(usize);
 
 impl From<u32> for BufferIndex {
     fn from(val: u32) -> Self {
-        Self(val.into())
+        Self((val as usize).into())
     }
 }
 
 impl From<BufferIndex> for u32 {
     fn from(val: BufferIndex) -> u32 {
+        (val.0 as u32).into()
+    }
+}
+
+impl From<usize> for BufferIndex {
+    fn from(val: usize) -> Self {
+        Self(val.into())
+    }
+}
+
+impl From<BufferIndex> for usize {
+    fn from(val: BufferIndex) -> usize {
         val.0.into()
+    }
+}
+
+
+pub struct Payload<'ctx, Ctx: Context> {
+    token: ManuallyDrop<Ctx::Token>,
+    ctx: &'ctx Ctx,
+}
+
+
+impl<'ctx, Ctx: Context> Payload<'ctx, Ctx> {
+    pub fn new(token: Ctx::Token, ctx: &'ctx Ctx) -> Self {
+        Self {
+            token: ManuallyDrop::new(token),
+            ctx,
+        }
+    }
+}
+
+impl<'ctx, Ctx: Context> Deref for Payload<'ctx, Ctx> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe {
+            &*self.ctx.unsafe_buffer(self.token.buffer_idx(), self.token.size())
+        }
+    }
+}
+
+
+impl<'ctx, Ctx: Context> DerefMut for Payload<'ctx, Ctx> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe {
+            &mut *self.ctx.unsafe_buffer(self.token.buffer_idx(), self.token.size())
+        }
+    }
+}
+
+impl<'ctx, Ctx: Context> Drop for Payload<'ctx, Ctx> {
+    fn drop(&mut self) {
+        self.ctx.release(self.token.buffer_idx());
+    }
+}
+
+
+impl<'ctx, Ctx: Context> Payload<'ctx, Ctx> {
+    pub fn into_token(self) -> Ctx::Token {
+        let mut me = ManuallyDrop::new(self);
+        let token = &mut me.token;
+        let rv = unsafe { std::ptr::read(token) };
+        ManuallyDrop::into_inner(rv)
     }
 }
 
@@ -47,9 +108,19 @@ pub trait Token: Sized + Send {
     fn consume<'ctx>(
         self,
         ctx: &'ctx Self::Context,
-    ) -> <Self::Context as Context>::Payload<'ctx> {
+    ) -> Payload<'ctx, Self::Context> {
         ctx.packet(self)
     }
+
+    fn buffer_idx(&self) -> BufferIndex;
+
+    fn size(&self) -> usize;
+
+    fn pool_id(&self) -> usize;
+}
+
+pub(crate) trait TokenExt {
+    fn clone(&self) -> Self;
 }
 
 /// A trait representing the buffer pool (or context) that is used by the
@@ -57,30 +128,38 @@ pub trait Token: Sized + Send {
 /// a buffer index and “releasing” the buffer back to the pool.
 pub trait Context: Sized + Clone + Send {
     /// The type of token this context uses.
-    type Token: Token<Context = Self>;
+    type Token: Token<Context = Self> + TokenExt;
 
-    /// **Generic associated type** for the payload. This means that for each
-    /// lifetime `'ctx`, `Payload<'ctx>` is a type that implements `NethunsPayload<'ctx>`.
-    ///
-    /// We say `Self: 'ctx` to ensure that the context outlives `'ctx`.
-    type Payload<'ctx>: Payload<'ctx>
-    where
-        Self: 'ctx;
+    fn check_token(&self, token: &Self::Token) -> bool {
+        token.pool_id() == self.pool_id()
+    }
 
     /// Create/load a payload from the context using the given token.
-    fn packet<'ctx>(&'ctx self, token: Self::Token) -> Self::Payload<'ctx>;
+    fn packet<'ctx>(&'ctx self, token: Self::Token) -> Payload<'ctx, Self> {
+        if !self.check_token(&token) {
+            panic!("Invalid token");
+        }
+        Payload::new(token, self)
+    }
 
-    /// Release a buffer back to the pool (typically called when a payload
-    /// is dropped).
+
+    fn pool_id(&self) -> usize;
+
+    unsafe fn unsafe_buffer(&self, buf_idx: BufferIndex, size: usize) -> *mut [u8];
+
     fn release(&self, buf_idx: BufferIndex);
 }
 
-/// A trait representing a packet’s payload data. Notice it has a lifetime `'a`:
-/// this means the payload may borrow data out of the context for `'a`.
-pub trait Payload<'a>:
-    AsRef<[u8]> + AsMut<[u8]> + Deref<Target = [u8]> + DerefMut<Target = [u8]>
-{
+pub(crate) trait ContextExt: Context {
+    fn peek_packet(&self, token: &Self::Token) -> Payload<'_, Self> {
+        if !self.check_token(token) {
+            panic!("Invalid token");
+        }
+        let token = TokenExt::clone(token);
+        Payload::new(token, self)
+    }
 }
+
 
 /// The common API for a network socket, which can send, receive, and flush.
 pub trait Socket<S: Strategy>: Send + Sized {
@@ -88,18 +167,18 @@ pub trait Socket<S: Strategy>: Send + Sized {
     type Context: Context;
     type Metadata: Metadata;
 
-    fn recv_local(
+    fn recv(
         &mut self,
     ) -> anyhow::Result<(
-        <Self::Context as Context>::Payload<'_>,
+        Payload<'_, Self::Context>,
         Self::Metadata,
     )> {
-        let (token, meta) = self.recv()?;
+        let (token, meta) = self.recv_token()?;
         Ok((token.consume(self.context()), meta))
     }
 
     /// Receives a packet and returns a token.
-    fn recv(
+    fn recv_token(
         &mut self,
     ) -> anyhow::Result<(<Self::Context as Context>::Token, Self::Metadata)>;
 
@@ -117,7 +196,7 @@ pub trait Socket<S: Strategy>: Send + Sized {
         portspec: &str,
         filter: Option<()>,
         flags: Flags,
-    ) -> anyhow::Result<(Self::Context, Self)>;
+    ) -> anyhow::Result<Self>;
 
     fn context(&self) -> &Self::Context;
 }
@@ -135,4 +214,5 @@ pub enum StrategyArgs {
 pub enum Flags {
     Netmap(NetmapFlags),
     AfXdp(AfXdpFlags),
+    DpdkFlags(DpdkFlags)
 }

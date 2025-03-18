@@ -112,8 +112,8 @@ where
     println!("  Output interface: {}", args.out_if);
 
     // Create the input and output sockets using the selected framework.
-    let (ctx_in, mut in_socket) = Sock::create(&args.in_if, None, flags.clone())?;
-    let (ctx_out, mut out_socket) = Sock::create(&args.out_if, None, flags.clone())?;
+    let mut in_socket = Sock::create(&args.in_if, None, flags.clone())?;
+    let mut out_socket = Sock::create(&args.out_if, None, flags.clone())?;
 
     // Atomic counters for received and forwarded packets.
     let total_rcv = Arc::new(AtomicU64::new(0));
@@ -145,7 +145,7 @@ where
     // Forwarding loop.
     while !term.load(Ordering::SeqCst) {
         // Receive a packet from the input socket.
-        let (packet, meta) = match in_socket.recv_local() {
+        let (packet, meta) = match in_socket.recv() {
             Ok((p, m)) => (p, m),
             Err(e) => {
                 eprintln!("Receive error: {:?}", e);

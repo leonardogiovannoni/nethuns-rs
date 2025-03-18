@@ -1,51 +1,16 @@
-use crate::api::{self, BufferConsumer, BufferProducer, Context};
+use crate::api::{self, BufferConsumer, BufferProducer, Context, Payload};
 use anyhow::{Result, bail};
 use netmap_rs::context::{BufferPool, Port, Receiver, RxBuf, Transmitter, TxBuf};
 use nix::sys::time::TimeVal;
 use std::cell::RefCell;
 //use std::cell::RefCell;
+use crate::api::ContextExt;
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-
 //type RefCell<T> = crate::fake_refcell::FakeRefCell<T>;
-
-#[derive(Clone, Copy, Debug)]
-struct U24Repr {
-    data: [u8; 3],
-}
-
-impl U24Repr {
-    fn new(data: [u8; 3]) -> Self {
-        Self { data }
-    }
-
-    fn from_u32(val: u32) -> Self {
-        let data = val.to_be_bytes();
-        Self {
-            data: [data[1], data[2], data[3]],
-        }
-    }
-
-    fn as_u32(&self) -> u32 {
-        u32::from_be_bytes([0, self.data[0], self.data[1], self.data[2]])
-    }
-}
-
-impl From<U24Repr> for u32 {
-    fn from(val: U24Repr) -> u32 {
-        val.as_u32()
-    }
-}
-
-impl From<u32> for U24Repr {
-    fn from(val: u32) -> Self {
-        Self::from_u32(val)
-    }
-}
-
 #[derive(Clone)]
 pub struct Ctx<S: api::Strategy> {
     buffer_pool: Arc<BufferPool>,
@@ -78,63 +43,29 @@ impl<S: api::Strategy> Ctx<S> {
     unsafe fn buffer(&self, idx: api::BufferIndex) -> *mut [u8] {
         unsafe { self.buffer_pool.buffer(u32::from(idx) as usize) }
     }
-
-    fn check_token(&self, token: &Tok<S>) -> bool {
-        token.buffer_pool == self.index
-    }
-
-    fn peek_packet(&self, token: &Tok<S>) -> PacketData<'_, S> {
-        if !self.check_token(token) {
-            panic!("Invalid token");
-        }
-        PacketData {
-            packet_idx: token.idx,
-            pool: self,
-        }
-    }
 }
 
 impl<S: api::Strategy> api::Context for Ctx<S> {
-    //type Payload = Payload<'a>;
     type Token = Tok<S>;
     fn release(&self, token: api::BufferIndex) {
         self.producer.borrow_mut().push(token);
     }
 
-    type Payload<'ctx> = PacketData<'ctx, S>;
+    unsafe fn unsafe_buffer(&self, buf_idx: api::BufferIndex, _size: usize) -> *mut [u8] {
+        unsafe { Ctx::buffer(self, buf_idx) }
+    }
 
-    fn packet<'ctx>(&'ctx self, token: Self::Token) -> Self::Payload<'ctx> {
-        if !self.check_token(&token) {
-            panic!("Invalid token");
-        }
-        let token = ManuallyDrop::new(token);
-        PacketData {
-            packet_idx: token.idx,
-            pool: self,
-        }
+    fn pool_id(&self) -> usize {
+        self.index
     }
 }
+impl<S: api::Strategy> api::ContextExt for Ctx<S> {}
 
 struct PacketHeader {
     // index: u32,
     // len: u16,
     // caplen: u16,
     ts: TimeVal,
-}
-
-pub struct RecvPacket<'a, S: api::Strategy> {
-    ts: TimeVal,
-    payload: PacketData<'a, S>,
-}
-
-impl<'a, S: api::Strategy> RecvPacket<'a, S> {
-    fn payload(&self) -> &[u8] {
-        self.payload.as_slice()
-    }
-
-    fn payload_mut(&mut self) -> &mut [u8] {
-        self.payload.as_mut_slice()
-    }
 }
 
 #[must_use]
@@ -157,6 +88,25 @@ impl<S: api::Strategy> Tok<S> {
 
 impl<S: api::Strategy> api::Token for Tok<S> {
     type Context = Ctx<S>;
+
+    fn buffer_idx(&self) -> api::BufferIndex {
+        self.idx
+    }
+
+    fn size(&self) -> usize {
+        // TODO: currently not used
+        0xdeadbeef
+    }
+
+    fn pool_id(&self) -> usize {
+        self.buffer_pool
+    }
+}
+
+impl<S: api::Strategy> api::TokenExt for Tok<S> {
+    fn clone(&self) -> Self {
+        ManuallyDrop::into_inner(Self::new(self.idx.into(), self.buffer_pool))
+    }
 }
 
 impl<S: api::Strategy> Drop for Tok<S> {
@@ -178,58 +128,6 @@ pub struct Sock<S: api::Strategy> {
 impl<S: api::Strategy> std::fmt::Debug for Sock<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Socket").finish()
-    }
-}
-
-pub struct PacketData<'a, S: api::Strategy> {
-    packet_idx: api::BufferIndex,
-    pool: &'a Ctx<S>,
-}
-
-impl<'a, S: api::Strategy> api::Payload<'a> for PacketData<'a, S> {}
-
-impl<'a, S: api::Strategy> PacketData<'a, S> {
-    fn as_slice(&self) -> &[u8] {
-        let token = self.packet_idx;
-        let buf = unsafe { self.pool.buffer(token) };
-        unsafe { &(*buf) }
-    }
-
-    fn as_mut_slice(&mut self) -> &mut [u8] {
-        let token = self.packet_idx;
-        let buf = unsafe { self.pool.buffer(token) };
-        unsafe { &mut (*buf) }
-    }
-}
-
-impl<S: api::Strategy> Deref for PacketData<'_, S> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
-}
-
-impl<S: api::Strategy> DerefMut for PacketData<'_, S> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut_slice()
-    }
-}
-impl<'a, S: api::Strategy> AsRef<[u8]> for PacketData<'a, S> {
-    fn as_ref(&self) -> &[u8] {
-        self.as_slice()
-    }
-}
-
-impl<'a, S: api::Strategy> AsMut<[u8]> for PacketData<'a, S> {
-    fn as_mut(&mut self) -> &mut [u8] {
-        self.as_mut_slice()
-    }
-}
-
-impl<'a, S: api::Strategy> Drop for PacketData<'a, S> {
-    fn drop(&mut self) {
-        self.pool.release(self.packet_idx);
     }
 }
 
@@ -279,7 +177,8 @@ impl<S: api::Strategy> Sock<S> {
 
         if let Some(filter) = self.filter.as_ref() {
             let aliased_packet = self.ctx.peek_packet(&packet_token);
-            if filter.apply(&ts, aliased_packet.as_slice()).is_err() {
+            let aliased_packet = ManuallyDrop::new(aliased_packet);
+            if filter.apply(&ts, &*aliased_packet).is_err() {
                 bail!("Filter failed");
             }
         }
@@ -291,7 +190,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     type Context = Ctx<S>;
     type Metadata = Meta;
 
-    fn recv(&mut self) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
+    fn recv_token(&mut self) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
         let mut rx = self.rx.borrow_mut();
         if let Some(tmp) = rx.iter_mut().next() {
             self.recv_inner(tmp)
@@ -311,7 +210,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     fn send(&mut self, packet: &[u8]) -> Result<()> {
         let mut tx = self.tx.borrow_mut();
         if let Some(next) = tx.iter_mut().next() {
-             self.send_inner(next, packet)
+            self.send_inner(next, packet)
         } else {
             // SAFETY: there are no `TxBuf`s, and so any `Slot`s, in use
             unsafe {
@@ -333,11 +232,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         }
     }
 
-    fn create(
-        portspec: &str,
-        filter: Option<()>,
-        flags: api::Flags,
-    ) -> anyhow::Result<(Self::Context, Self)> {
+    fn create(portspec: &str, filter: Option<()>, flags: api::Flags) -> anyhow::Result<Self> {
         let flags = match flags {
             api::Flags::Netmap(flags) => flags,
             _ => panic!("Invalid flags"),
@@ -346,16 +241,13 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         let extra_bufs = unsafe { port.extra_buffers_indexes() };
         let (tx, rx, buffer_pool) = port.split();
         let (ctx, consumer) = Ctx::new(buffer_pool, extra_bufs, flags.strategy_args);
-        Ok((
-            ctx.clone(),
-            Self {
-                tx: RefCell::new(tx),
-                rx: RefCell::new(rx),
-                ctx,
-                consumer: RefCell::new(consumer),
-                filter: None, // TODO
-            },
-        ))
+        Ok(Self {
+            tx: RefCell::new(tx),
+            rx: RefCell::new(rx),
+            ctx,
+            consumer: RefCell::new(consumer),
+            filter: None, // TODO
+        })
     }
 
     fn context(&self) -> &Self::Context {
@@ -375,22 +267,25 @@ impl api::Metadata for Meta {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{api::{self, Flags, Socket}, netmap::Sock, strategy::{MpscArgs, MpscStrategy}};
     use super::*;
+    use crate::{
+        api::{self, Flags, Socket},
+        netmap::Sock,
+        strategy::{MpscArgs, MpscStrategy},
+    };
 
     #[test]
     fn test_send_with_flush() {
-        let (ctx0, mut socket0) = Sock::<MpscStrategy>::create(
+        let mut socket0 = Sock::<MpscStrategy>::create(
             "vale0:0",
             None,
             Flags::Netmap(NetmapFlags {
-                
                 extra_buf: 1024,
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
             }),
         )
         .unwrap();
-        let (_, mut socket1) = Sock::<MpscStrategy>::create(
+        let mut socket1 = Sock::<MpscStrategy>::create(
             "vale0:1",
             None,
             Flags::Netmap(NetmapFlags {
@@ -401,7 +296,7 @@ mod tests {
         .unwrap();
         socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();
         socket1.flush();
-        let (packet, meta) = socket0.recv_local().unwrap();
+        let (packet, meta) = socket0.recv().unwrap();
         assert_eq!(&packet[..20], b"Helloworldmyfriend\0\0");
     }
 }

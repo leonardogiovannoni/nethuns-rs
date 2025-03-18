@@ -1,5 +1,5 @@
 mod wrapper;
-use crate::api::{self, BufferConsumer, BufferProducer};
+use crate::api::{self, BufferConsumer, BufferProducer, Payload};
 use anyhow::{Result, bail};
 use libc::{self, _SC_PAGESIZE, sysconf};
 use libxdp_sys::XSK_UMEM__DEFAULT_FRAME_SIZE;
@@ -40,73 +40,81 @@ pub struct Ctx<S: api::Strategy> {
     producer: RefCell<S::Producer>,
     index: usize,
 }
+//
+//pub struct PacketData<'a, S: api::Strategy> {
+//    packet_idx: api::BufferIndex,
+//    size: usize,
+//    pool: &'a Ctx<S>,
+//}
+//
+//impl<'a, S: api::Strategy> api::Payload<'a> for PacketData<'a, S> {
+//    type Context = Ctx<S>;
+//    fn into_token(self) -> <Self::Context as api::Context>::Token {
+//        let me = ManuallyDrop::new(self);
+//        let rv = Tok::new(u32::from(me.packet_idx) as u64, me.pool.index, me.size as u32);
+//        ManuallyDrop::into_inner(rv)
+//    }
+//}
+//
+//impl<'a, S: api::Strategy> PacketData<'a, S> {
+//    fn as_slice(&self) -> &[u8] {
+//        let token = self.packet_idx;
+//        let buf = unsafe { self.pool.buffer(token, self.size) };
+//        unsafe { &(*buf) }
+//    }
+//
+//    fn as_mut_slice(&mut self) -> &mut [u8] {
+//        let token = self.packet_idx;
+//        let buf = unsafe { self.pool.buffer(token, self.size) };
+//        unsafe { &mut (*buf) }
+//    }
+//}
+//
+//impl<S: api::Strategy> AsRef<[u8]> for PacketData<'_, S> {
+//    fn as_ref(&self) -> &[u8] {
+//        self.as_slice()
+//    }
+//}
+//
+//impl<S: api::Strategy> AsMut<[u8]> for PacketData<'_, S> {
+//    fn as_mut(&mut self) -> &mut [u8] {
+//        self.as_mut_slice()
+//    }
+//}
+//
+//impl<S: api::Strategy> Deref for PacketData<'_, S> {
+//    type Target = [u8];
+//
+//    fn deref(&self) -> &Self::Target {
+//        self.as_slice()
+//    }
+//}
+//
+//impl<S: api::Strategy> DerefMut for PacketData<'_, S> {
+//    fn deref_mut(&mut self) -> &mut Self::Target {
+//        self.as_mut_slice()
+//    }
+//}
+//
+//impl<'a, S: api::Strategy> Drop for PacketData<'a, S> {
+//    fn drop(&mut self) {
+//        self.pool.release(self.packet_idx);
+//    }
+//}
 
-pub struct PacketData<'a, S: api::Strategy> {
-    packet_idx: api::BufferIndex,
-    size: usize,
-    pool: &'a Ctx<S>,
-}
 
-impl<'a, S: api::Strategy> api::Payload<'a> for PacketData<'a, S> {}
-
-impl<'a, S: api::Strategy> PacketData<'a, S> {
-    fn as_slice(&self) -> &[u8] {
-        let token = self.packet_idx;
-        let buf = unsafe { self.pool.buffer(token, self.size) };
-        unsafe { &(*buf) }
-    }
-
-    fn as_mut_slice(&mut self) -> &mut [u8] {
-        let token = self.packet_idx;
-        let buf = unsafe { self.pool.buffer(token, self.size) };
-        unsafe { &mut (*buf) }
-    }
-}
-
-impl<S: api::Strategy> AsRef<[u8]> for PacketData<'_, S> {
-    fn as_ref(&self) -> &[u8] {
-        self.as_slice()
-    }
-}
-
-impl<S: api::Strategy> AsMut<[u8]> for PacketData<'_, S> {
-    fn as_mut(&mut self) -> &mut [u8] {
-        self.as_mut_slice()
-    }
-}
-
-impl<S: api::Strategy> Deref for PacketData<'_, S> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
-}
-
-impl<S: api::Strategy> DerefMut for PacketData<'_, S> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut_slice()
-    }
-}
-
-impl<'a, S: api::Strategy> Drop for PacketData<'a, S> {
-    fn drop(&mut self) {
-        self.pool.release(self.packet_idx);
-    }
-}
-
-fn pippo<S: api::Strategy>(buffer_pool: UmemArea, args: api::StrategyArgs) -> (Ctx<S>, S::Consumer) {
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let (producer, cons) = S::create(args);
-    // mpsc::channel::<api::BufferIndex>(buffer_pool.size as usize);
-    let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let res = Ctx {
-        buffer: buffer_pool, //: Arc::new(buffer_pool),
-        producer: RefCell::new(producer),
-        index: counter,
-    };
-    (res, cons)
-}
+//fn pippo<S: api::Strategy>(buffer_pool: UmemArea, args: api::StrategyArgs) -> (Ctx<S>, S::Consumer) {
+//    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+//    let (producer, cons) = S::create(args);
+//    // mpsc::channel::<api::BufferIndex>(buffer_pool.size as usize);
+//    let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
+//    let res = Ctx {
+//        buffer: buffer_pool, //: Arc::new(buffer_pool),
+//        producer: RefCell::new(producer),
+//        index: counter,
+//    };
+//    (res, cons)
+//}
 
 impl<S: api::Strategy> Ctx<S> {
     fn new(buffer_pool: UmemArea, args: api::StrategyArgs) -> (Self, S::Consumer) {
@@ -139,18 +147,16 @@ impl<S: api::Strategy> Ctx<S> {
 impl<S: api::Strategy> api::Context for Ctx<S> {
     type Token = Tok<S>;
 
-    type Payload<'ctx> = PacketData<'ctx, S>;
-
-    fn packet<'ctx>(&'ctx self, token: Self::Token) -> Self::Payload<'ctx> {
-        PacketData {
-            packet_idx: token.idx,
-            size: token.len as usize,
-            pool: self,
-        }
-    }
-
     fn release(&self, buf_idx: api::BufferIndex) {
         self.producer.borrow_mut().push(buf_idx);
+    }
+
+    unsafe fn unsafe_buffer(&self, buf_idx: api::BufferIndex, size: usize) -> *mut [u8] {
+        unsafe { self.buffer(buf_idx, size) }
+    }
+
+    fn pool_id(&self) -> usize {
+        self.index
     }
 }
 
@@ -266,7 +272,6 @@ fn complete_tx<S: api::Strategy>(xsk: &Sock<S>) -> io::Result<()> {
             .push(api::BufferIndex::from(addr as u32));
     }
     umem.ring_cons_mut().release(completed);
-    // Also be sure to flush your free list if you’re using e.g. a lockfree ring
     xsk.ctx.producer.borrow_mut().flush();
 
     Ok(())
@@ -281,7 +286,31 @@ pub struct Tok<S: api::Strategy> {
 
 impl<S: api::Strategy> api::Token for Tok<S> {
     type Context = Ctx<S>;
+
+    fn buffer_idx(&self) -> api::BufferIndex {
+        self.idx
+    }
+
+    fn size(&self) -> usize {
+        self.len as usize
+    }
+
+    fn pool_id(&self) -> usize {
+        self.buffer_pool
+    }
 }
+
+impl<S: api::Strategy> api::TokenExt for Tok<S> {
+    fn clone(&self) -> Self {
+        Tok {
+            idx: self.idx,
+            len: self.len,
+            buffer_pool: self.buffer_pool,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
 
 impl<S: api::Strategy> Tok<S> {
     fn new(idx: u64, buffer_pool: usize, len: u32) -> ManuallyDrop<Self> {
@@ -442,7 +471,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     type Context = Ctx<S>;
     type Metadata = Meta;
 
-    fn recv(&mut self) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
+    fn recv_token(&mut self) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
         let mut rx = self.xsk.borrow_mut();
         if let Some(slot) = rx.rx_mut().next() {
             self.recv_inner(slot)
@@ -492,7 +521,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         portspec: &str,
         filter: Option<()>,
         flags: api::Flags,
-    ) -> anyhow::Result<(Self::Context, Self)> {
+    ) -> anyhow::Result<Self> {
         let flags = match flags {
             api::Flags::AfXdp(flags) => flags,
             _ => panic!("Invalid flags"),
@@ -501,7 +530,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         let bind_flags = flags.bind_flags;
         let umem_bytes_len = NUM_FRAMES * FRAME_SIZE;
         let umem = UmemArea::new(umem_bytes_len as usize)?;
-        let (ctx, consumer) = pippo(umem.clone(), flags.strategy_args);
+        let (ctx, consumer) = Ctx::new(umem.clone(), flags.strategy_args);
 
         for i in 0..NUM_FRAMES {
             let prod: &mut <S as api::Strategy>::Producer = &mut *ctx.producer.borrow_mut();
@@ -526,8 +555,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         };
 
         umem_manager.refill_fill_ring()?;
-        Ok((
-            ctx.clone(),
+        Ok(
             Self {
                 ctx,
                 xsk: RefCell::new(socket),
@@ -536,7 +564,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
                 stats: Cell::new(StatsRecord::default()),
                 prev_stats: Cell::new(StatsRecord::default()),
             },
-        ))
+        )
     }
 
     fn context(&self) -> &Self::Context {
@@ -566,12 +594,15 @@ fn gettime() -> u64 {
 }
 
 pub fn alloc_page_aligned(size: usize) -> io::Result<*mut u8> {
-    // In purely std-only Rust, there's no direct API to get the OS page size,
-    // so we'll pretend it's 4096. In real code, you might call libc::sysconf or use a crate.
-    //let page_size = 4096;
-    let page_size = unsafe { sysconf(_SC_PAGESIZE) } as usize;
+    if size == 0 {
+        return Err(Error::new(ErrorKind::InvalidInput, "Invalid size"));
+    }
+    let page_size = unsafe { sysconf(_SC_PAGESIZE) };
+    if page_size < 0 {
+        return Err(Error::last_os_error());
+    }
+    let page_size = page_size as usize;
 
-    // Build a Layout describing a block of `size` bytes with `page_size` alignment.
     let layout = Layout::from_size_align(size, page_size)
         .map_err(|_| Error::new(ErrorKind::InvalidInput, "Invalid layout"))?;
 
@@ -612,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_send_with_flush() {
-        let (ctx0, mut socket0) = Sock::<MpscStrategy>::create(
+        let mut socket0 = Sock::<MpscStrategy>::create(
             "veth_test0:0",
             None,
             Flags::AfXdp(AfXdpFlags {
@@ -622,7 +653,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let (_, mut socket1) = Sock::<MpscStrategy>::create(
+        let mut socket1 = Sock::<MpscStrategy>::create(
             "veth_test1:0",
             None,
             Flags::AfXdp(AfXdpFlags {
@@ -634,7 +665,7 @@ mod tests {
         .unwrap();
         socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();
         socket1.flush();
-        let (packet, meta) = socket0.recv_local().unwrap();
+        let (packet, meta) = socket0.recv().unwrap();
         assert_eq!(&packet[..20], b"Helloworldmyfriend\0\0");
     }
 }

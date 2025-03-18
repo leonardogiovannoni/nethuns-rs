@@ -1,0 +1,10 @@
+[package]
+name = "dpdk-sys"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+bindgen = "0.71.1"
+pkg-config = "0.3.32"
+cc = "1.2.16"
+

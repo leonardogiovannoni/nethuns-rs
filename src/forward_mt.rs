@@ -78,8 +78,8 @@ struct PacketMeta {
 }
 
 /// A structure that packages a received packet.
-struct Packet<S: Context> {
-    payload: S::Token,
+struct Packet<Ctx: Context> {
+    payload: Ctx::Token,
 }
 
 /// Generic function that sets up the SPSC queue, spawns meter and consumer threads,
@@ -91,13 +91,12 @@ where
     // Create a SPSC queue with capacity for 65,536 packets.
     // let queue = Arc::new(ArrayQueue::<Packet<_>>::new(65_536));
 
-    let queue = ringbuf::HeapRb::<Packet<_>>::new(65_536);
+    let queue = ringbuf::HeapRb::<Packet<Sock::Context>>::new(65_536);
 
     // Atomic counters for received and forwarded packets.
     let total_rcv = Arc::new(AtomicU64::new(0));
     let total_fwd = Arc::new(AtomicU64::new(0));
 
-    // Spawn the meter thread.
     {
         let total_rcv = total_rcv.clone();
         let total_fwd = total_fwd.clone();
@@ -111,29 +110,26 @@ where
         });
     }
 
-    // Spawn the consumer thread which will create the output socket.
-    // let queue_consumer = queue.clone();
     let (mut prod, mut cons) = queue.split();
     let total_fwd_consumer = total_fwd.clone();
     let out_if = args.out_if.clone();
     let flags_consumer = flags.clone();
 
-    let (in_ctx, mut in_socket) = Sock::create(&args.in_if, None, flags.clone())?;
+    let mut in_socket = Sock::create(&args.in_if, None, flags.clone())?;
 
-    let (_, mut out_socket) = Sock::create(&out_if, None, flags_consumer)?;
+    let mut out_socket = Sock::create(&out_if, None, flags_consumer)?;
     {
-        let in_ctx = in_ctx.clone();
+        let in_ctx = in_socket.context().clone();
         thread::spawn(move || -> Result<()> {
             out_socket.send(b"ciaoaaoaoaooaoa").unwrap();
             out_socket.flush();
             loop {
                 for packet in cons.pop_iter() {
                     total_fwd_consumer.fetch_add(1, Ordering::SeqCst);
-                    let packet: <Sock::Context as Context>::Token = packet.payload;
+                    let packet = packet.payload;
                     let packet = &*packet.consume(&in_ctx);
                     out_socket.send(packet)?;
                     out_socket.flush();
-
                     total_fwd_consumer.fetch_add(1, Ordering::SeqCst);
                 }
             }
@@ -142,16 +138,12 @@ where
 
     // Main loop: receive packets and push them into the SPSC queue.
     while !term.load(Ordering::SeqCst) {
-        // Assume recv_local() returns a tuple (Vec<u8>, PacketMeta).
-        let (payload, meta) = match in_socket.recv() {
-            Ok(res) => res,
-            Err(e) => {
-                continue;
-            }
+        let Ok((payload, meta)) = in_socket.recv() else {
+            continue;
         };
-
+        let payload = payload.into_token();
         total_rcv.fetch_add(1, Ordering::SeqCst);
-        let mut packet: Packet<Sock::Context> = Packet { payload };
+        let mut packet = Packet { payload };
         // Busy-wait until the packet can be pushed into the queue.
         loop {
             if let Err(pkt) = prod.try_push(packet) {
@@ -163,8 +155,6 @@ where
         }
     }
 
-    // Normally, you would also close the sockets and join threads.
-    // For simplicity (and since the loops are infinite), we return Ok(()) here.
     Ok(())
 }
 
