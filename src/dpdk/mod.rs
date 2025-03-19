@@ -31,17 +31,9 @@ type Filter = ();
 
 #[derive(Clone)]
 pub struct Ctx<S: api::Strategy> {
-    buffer_pool: Arc<UnsafeCell<BufferPool>>,
     producer: RefCell<S::Producer>,
     index: usize,
 }
-
-// (* Temporary
-
-unsafe impl<S: api::Strategy> Send for Ctx<S> {}
-unsafe impl<S: api::Strategy> Sync for Ctx<S> {}
-
-// Temporary *)
 
 impl<S: api::Strategy> Ctx<S> {
     unsafe fn buffer(&self, idx: api::BufferIndex) -> *mut [u8] {
@@ -55,21 +47,14 @@ impl<S: api::Strategy> Ctx<S> {
 }
 
 impl<S: api::Strategy> Ctx<S> {
-    fn new(buffer_pool: BufferPool, strategy_args: api::StrategyArgs) -> (Self, S::Consumer) {
+    fn new(strategy_args: api::StrategyArgs) -> (Self, S::Consumer) {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let (mut producer, cons) = S::create(strategy_args);
+        let (producer, cons) = S::create(strategy_args);
         let res = Self {
-            buffer_pool: Arc::new(UnsafeCell::new(buffer_pool)),
             producer: RefCell::new(producer),
             index: COUNTER.fetch_add(1, Ordering::SeqCst),
         };
         (res, cons)
-    }
-
-    fn free(&mut self, token: api::BufferIndex) {
-        let token: usize = token.into();
-        let ptr = token as *mut rte_mbuf;
-        unsafe { (*self.buffer_pool.get()).free(ptr) };
     }
 }
 
@@ -141,12 +126,6 @@ pub struct Sock<S: api::Strategy> {
     filter: Option<Filter>,
 }
 
-// (* Temporary
-
-unsafe impl<S: api::Strategy> Send for Sock<S> {}
-
-// Temporary *)
-
 pub struct Meta {}
 
 impl api::Metadata for Meta {}
@@ -157,7 +136,10 @@ impl<S: api::Strategy> Sock<S> {
         loop {
             let mut b = false;
             while let Some(val) = consumer.pop() {
-                self.ctx.free(val);
+                // self.ctx.free(val);
+                let ptr = usize::from(val) as *mut rte_mbuf;
+
+                unsafe { rust_rte_pktmbuf_free(ptr) };
                 b = true;
             }
             if !b {
@@ -240,16 +222,15 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             _ => panic!("Invalid flags"),
         };
 
-        let (buffer_pool, rx, tx) = Context::new(
+        let (_, rx, tx) = Context::new(
             portspec,
-            NUM_MBUFS,
-            MBUF_CACHE_SIZE,
-            RTE_MBUF_DEFAULT_BUF_SIZE as u16,
-            PORT_ID,
-            0,
+            flags.num_mbufs,
+            flags.mbuf_cache_size,
+            flags.mbuf_default_buf_size,
+            flags.queue_id,
         )?;
 
-        let (ctx, consumer) = Ctx::new(buffer_pool, flags.strategy_args);
+        let (ctx, consumer) = Ctx::new(flags.strategy_args);
         Ok(Self {
             tx: RefCell::new(tx),
             rx: RefCell::new(rx),
@@ -267,8 +248,11 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
 #[derive(Clone, Debug)]
 pub struct DpdkFlags {
     pub strategy_args: api::StrategyArgs,
+    pub num_mbufs: u32,
+    pub mbuf_cache_size: u32,
+    pub mbuf_default_buf_size: u16,
+    pub queue_id: u16,
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -280,19 +264,27 @@ mod tests {
 
     #[test]
     fn test_send_with_flush() {
-       let mut socket0 = Sock::<MpscStrategy>::create(
-            "veth0",
+        let mut socket0 = Sock::<MpscStrategy>::create(
+            "veth0dpdk",
             None,
             Flags::DpdkFlags(DpdkFlags {
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+                num_mbufs: 8192,
+                mbuf_cache_size: 250,
+                mbuf_default_buf_size: 2176,
+                queue_id: 0,
             }),
         )
         .unwrap();
         let mut socket1 = Sock::<MpscStrategy>::create(
-            "veth1",
+            "veth1dpdk",
             None,
             Flags::DpdkFlags(DpdkFlags {
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+                num_mbufs: 8192,
+                mbuf_cache_size: 250,
+                mbuf_default_buf_size: 2176,
+                queue_id: 0,
             }),
         )
         .unwrap();

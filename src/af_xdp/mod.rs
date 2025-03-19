@@ -132,7 +132,7 @@ impl<S: api::Strategy> Ctx<S> {
 
     unsafe fn buffer(&self, idx: api::BufferIndex, size: usize) -> *mut [u8] {
         let (ptr, _) = self.buffer.raw_parts();
-        let offset = u32::from(idx) as usize;
+        let offset = usize::from(idx) as usize;
         unsafe {
             let start = ptr.add(offset);
             std::slice::from_raw_parts_mut(start, size)
@@ -212,7 +212,7 @@ impl<S: api::Strategy> UmemManager<S> {
     /// Allocates one frame address from our free array.
     fn alloc_frame(&mut self) -> Option<u32> {
         // self.frames.pop()
-        self.consumer.pop().map(|idx| u32::from(idx))
+        self.consumer.pop().map(|idx| usize::from(idx) as u32)
     }
 
     // Lo userei quando fallisce in qualche modo la read o la write
@@ -269,7 +269,7 @@ fn complete_tx<S: api::Strategy>(xsk: &Sock<S>) -> io::Result<()> {
         xsk.ctx
             .producer
             .borrow_mut()
-            .push(api::BufferIndex::from(addr as u32));
+            .push(api::BufferIndex::from(addr as usize));
     }
     umem.ring_cons_mut().release(completed);
     xsk.ctx.producer.borrow_mut().flush();
@@ -314,7 +314,7 @@ impl<S: api::Strategy> api::TokenExt for Tok<S> {
 
 impl<S: api::Strategy> Tok<S> {
     fn new(idx: u64, buffer_pool: usize, len: u32) -> ManuallyDrop<Self> {
-        let idx: u32 = idx.try_into().unwrap();
+        let idx: usize = idx.try_into().unwrap();
         let idx = api::BufferIndex::from(idx);
         ManuallyDrop::new(Self {
             idx,
@@ -324,9 +324,6 @@ impl<S: api::Strategy> Tok<S> {
         })
     }
 
-    //fn load(self, pool: &Ctx<S>) -> PacketData<'_, S> {
-    //    pool.packet(self)
-    //}
 }
 
 struct Port {
@@ -375,11 +372,6 @@ impl<S: api::Strategy> Sock<S> {
         let offset = slot.offset;
         let len = slot.len;
         let options = slot.options;
-        // self.stats.update(|mut s| {
-        //     s.rx_bytes += len as u64;
-        //     s.rx_packets += 1;
-        //     s
-        // });
         let mut stats = self.stats.get();
         stats.rx_bytes += len as u64;
         stats.rx_packets += 1;
@@ -402,7 +394,7 @@ impl<S: api::Strategy> Sock<S> {
         *slot.len_mut() = payload.len() as u32;
 
         // Actually copy the packet into UMEM
-        let buffer_index = api::BufferIndex::from(frame_addr);
+        let buffer_index = api::BufferIndex::from(frame_addr as usize);
         let buf = unsafe { self.ctx.buffer(buffer_index, payload.len()) };
 
         unsafe {
@@ -534,7 +526,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
 
         for i in 0..NUM_FRAMES {
             let prod: &mut <S as api::Strategy>::Producer = &mut *ctx.producer.borrow_mut();
-            prod.push(api::BufferIndex::from((i as u32) * FRAME_SIZE as u32));
+            prod.push(api::BufferIndex::from((i as usize) * FRAME_SIZE as usize));
         }
         {
             let prod: &mut <S as api::Strategy>::Producer = &mut *ctx.producer.borrow_mut();
@@ -633,18 +625,10 @@ mod tests {
 
     use super::*;
 
-    //#[test]
-    //fn test_send_without_flush() {
-    //    let (_, socket0) = Socket::create("vale0:0", 1024, None, 0, 0).unwrap();
-    //    let (_, socket1) = Socket::create("vale0:1", 1024, None, 0, 0).unwrap();
-    //    socket1.send(b"Helloworldmyfriend\0\0").unwrap();
-    //    assert!(socket0.recv().is_err());
-    //}
-
     #[test]
     fn test_send_with_flush() {
         let mut socket0 = Sock::<MpscStrategy>::create(
-            "veth0:0",
+            "veth0af_xdp:0",
             None,
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
@@ -654,7 +638,7 @@ mod tests {
         )
         .unwrap();
         let mut socket1 = Sock::<MpscStrategy>::create(
-            "veth1:0",
+            "veth1af_xdp:0",
             None,
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,

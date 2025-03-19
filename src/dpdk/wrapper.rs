@@ -135,7 +135,6 @@ impl Context {
         num_mbufs: u32,
         mbuf_cache_size: u32,
         mbuf_default_buf_size: u16,
-        port_id: u16,
         queue_id: u16,
     ) -> Result<Self> {
         let _guard = redirect_stderr_to_null()?;
@@ -206,7 +205,6 @@ impl Context {
         num_mbufs: u32,
         mbuf_cache_size: u32,
         mbuf_default_buf_size: u16,
-        port_id: u16,
         queue_id: u16,
     ) -> Result<(BufferPool, Receiver, Transmitter)> {
         let ctx = Self::inner_new(
@@ -214,7 +212,6 @@ impl Context {
             num_mbufs,
             mbuf_cache_size,
             mbuf_default_buf_size,
-            port_id,
             queue_id,
         )?;
         Ok(Self::split(ctx))
@@ -238,12 +235,7 @@ impl Context {
         };
 
         let trasmitter = Transmitter::new(ctx, mempool);
-        // {
-        //    ctx,
-        //    mempool,
-        //    bufs: ArrayVec::new(),
-        //    ready_bufs: ArrayVec::new()
-        //};
+       
         (buffer_pool, receiver, trasmitter)
     }
 }
@@ -266,6 +258,8 @@ pub(crate) struct BufferPool {
     ctx: Arc<UnsafeCell<Context>>,
 }
 
+unsafe impl Send for BufferPool {}
+
 impl BufferPool {
     pub(crate) fn allocate(&mut self) -> *mut rte_mbuf {
         let ctx = unsafe { &mut *self.ctx.get() };
@@ -287,6 +281,8 @@ pub(crate) struct Receiver {
     port_id: u16,
     queue_id: u16,
 }
+
+unsafe impl Send for Receiver {}
 
 impl Receiver {
     pub(crate) fn iter_mut(&mut self) -> ReceiverIterMut {
@@ -362,10 +358,10 @@ impl<'a> Iterator for ReceiverIterMut<'a> {
 pub(crate) struct Transmitter {
     ctx: Arc<UnsafeCell<Context>>,
     mempool: *mut rte_mempool,
-    // bufs: [*mut rte_mbuf; BURST_SIZE as usize],
     bufs: ArrayVec<*mut rte_mbuf, { BURST_SIZE as usize }>,
     ready_bufs: ArrayVec<NonNull<rte_mbuf>, { BURST_SIZE as usize }>,
-    //index: usize,
+    port_id: u16,
+    queue_id: u16,
 }
 
 impl Transmitter {
@@ -374,12 +370,12 @@ impl Transmitter {
     }
 
     pub(crate) fn flush(&mut self) {
-        let port_id = unsafe { (*self.ctx.get()).port_id };
-        let queue_id = unsafe { (*self.ctx.get()).queue_id };
+        //let port_id = unsafe { (*self.ctx.get()).port_id };
+        //let queue_id = unsafe { (*self.ctx.get()).queue_id };
         let sent = unsafe {
             let len = self.ready_bufs.len();
             let ready_bufs: *mut *mut rte_mbuf = self.ready_bufs.as_mut_ptr() as *mut *mut _;
-            rust_rte_eth_tx_burst(port_id, queue_id, ready_bufs, len as u16)
+            rust_rte_eth_tx_burst(self.port_id, self.queue_id, ready_bufs, len as u16)
         } as usize;
         self.ready_bufs.drain(..sent);
     }
@@ -402,14 +398,21 @@ impl Transmitter {
             panic!("Cannot allocate mbufs");
         }
 
+        let port_id = unsafe { (*ctx.get()).port_id };
+        let queue_id = unsafe { (*ctx.get()).queue_id };
+
         Self {
             ctx,
             mempool,
             bufs,
             ready_bufs: ArrayVec::new(),
+            port_id,
+            queue_id,
         }
     }
 }
+
+unsafe impl Send for Transmitter {}
 
 pub(crate) struct TransmitterIterMut<'a> {
     tx: &'a mut Transmitter,

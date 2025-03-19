@@ -59,7 +59,8 @@ impl<T> Producer<T> {
 
     pub fn flush(&mut self) {
         let len = self.buffer.len();
-        let res = self.elem.enqueue_many(self.buffer.drain(..));
+        let iter = self.buffer.drain(..);
+        let res = self.elem.enqueue_many(iter);
         assert_eq!(res, len);
     }
 }

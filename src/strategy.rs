@@ -35,7 +35,7 @@ pub struct MpscArgs {
     pub producer_buffer_size: usize,
 }
 
-const DEFAULT_BUFFER_SIZE: usize = 1024;
+const DEFAULT_BUFFER_SIZE: usize = 65536;
 const DEFAULT_CONSUMER_BUFFER_SIZE: usize = 256;
 const DEFAULT_PRODUCER_BUFFER_SIZE: usize = 256;
 

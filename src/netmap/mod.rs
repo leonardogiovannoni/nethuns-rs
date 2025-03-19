@@ -29,7 +29,7 @@ impl<S: api::Strategy> Ctx<S> {
         let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
         let buffer_pool = Arc::new(buffer_pool);
         for idx in indexes {
-            producer.push(api::BufferIndex::from(idx));
+            producer.push(api::BufferIndex::from(idx as usize));
         }
         producer.flush();
         let res = Self {
@@ -41,7 +41,7 @@ impl<S: api::Strategy> Ctx<S> {
     }
 
     unsafe fn buffer(&self, idx: api::BufferIndex) -> *mut [u8] {
-        unsafe { self.buffer_pool.buffer(u32::from(idx) as usize) }
+        unsafe { self.buffer_pool.buffer(usize::from(idx)) }
     }
 }
 
@@ -77,7 +77,7 @@ pub struct Tok<S: api::Strategy> {
 
 impl<S: api::Strategy> Tok<S> {
     fn new(idx: u32, buffer_pool: usize) -> ManuallyDrop<Self> {
-        let idx = api::BufferIndex::from(idx);
+        let idx = api::BufferIndex::from(idx as usize);
         ManuallyDrop::new(Self {
             idx,
             buffer_pool,
@@ -105,7 +105,7 @@ impl<S: api::Strategy> api::Token for Tok<S> {
 
 impl<S: api::Strategy> api::TokenExt for Tok<S> {
     fn clone(&self) -> Self {
-        ManuallyDrop::into_inner(Self::new(self.idx.into(), self.buffer_pool))
+        ManuallyDrop::into_inner(Self::new(usize::from(self.idx) as u32, self.buffer_pool))
     }
 }
 
@@ -150,7 +150,7 @@ impl<S: api::Strategy> Sock<S> {
     fn send_inner(&self, scan: TxBuf<'_>, packet: &[u8]) -> Result<()> {
         let TxBuf { ref slot, .. } = scan;
         let token = slot.buf_idx();
-        let token = api::BufferIndex::from(token);
+        let token = api::BufferIndex::from(token as usize);
         let buf = unsafe { self.ctx.buffer(token) };
         let buf = unsafe { &mut (*buf) };
         if packet.len() > buf.len() {
@@ -170,7 +170,7 @@ impl<S: api::Strategy> Sock<S> {
             .ok_or_else(|| anyhow::anyhow!("No free buffers"))?;
         let pkt_idx = slot.buf_idx();
         unsafe {
-            slot.update_buffer(|x| *x = u32::from(free_idx));
+            slot.update_buffer(|x| *x = usize::from(free_idx) as u32);
         }
 
         let packet_token = Tok::new(pkt_idx, self.ctx.index);

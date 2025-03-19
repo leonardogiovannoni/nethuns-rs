@@ -1,7 +1,7 @@
 use std::{mem::ManuallyDrop, ops::{Deref, DerefMut}};
 
 use crate::{
-    af_xdp::AfXdpFlags, dpdk::DpdkFlags, netmap::NetmapFlags, strategy::{CrossbeamArgs, MpscArgs, MpscStrategy, StdArgs}
+    af_xdp::AfXdpFlags, dpdk::DpdkFlags, netmap::NetmapFlags, strategy::{CrossbeamArgs, MpscArgs, StdArgs}
 };
 
 pub trait Strategy: Send + Clone + 'static {
@@ -10,12 +10,12 @@ pub trait Strategy: Send + Clone + 'static {
     fn create(args: StrategyArgs) -> (Self::Producer, Self::Consumer);
 }
 
-pub trait BufferProducer: Clone + Send {
+pub(crate) trait BufferProducer: Clone + Send {
     fn push(&mut self, elem: BufferIndex);
     fn flush(&mut self);
 }
 
-pub trait BufferConsumer: Send {
+pub(crate) trait BufferConsumer: Send {
     fn pop(&mut self) -> Option<BufferIndex>;
     fn available_len(&self) -> usize;
     fn sync(&mut self);
@@ -24,17 +24,17 @@ pub trait BufferConsumer: Send {
 #[derive(Clone, Copy, Debug)]
 pub struct BufferIndex(usize);
 
-impl From<u32> for BufferIndex {
-    fn from(val: u32) -> Self {
-        Self((val as usize).into())
-    }
-}
-
-impl From<BufferIndex> for u32 {
-    fn from(val: BufferIndex) -> u32 {
-        (val.0 as u32).into()
-    }
-}
+//impl From<u32> for BufferIndex {
+//    fn from(val: u32) -> Self {
+//        Self((val as usize).into())
+//    }
+//}
+//
+//impl From<BufferIndex> for u32 {
+//    fn from(val: BufferIndex) -> u32 {
+//        (val.0 as u32).into()
+//    }
+//}
 
 impl From<usize> for BufferIndex {
     fn from(val: usize) -> Self {
