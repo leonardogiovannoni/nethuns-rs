@@ -11,42 +11,22 @@ use std::{io::BufRead, time::Duration};
 use anyhow::Result;
 use api::{Flags, Socket};
 use dpdk::DpdkFlags;
-use strategy::{MpscArgs, MpscStrategy};    /*let dpdk_flags = dpdk::DpdkFlags {
-        strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
-    };
-    let flags = api::Flags::DpdkFlags(dpdk_flags);
-    let mut sock = dpdk::Sock::<MpscStrategy>::create("veth0", None, flags)?;
+use strategy::{MpscArgs, MpscStrategy}; /*let dpdk_flags = dpdk::DpdkFlags {
+strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+};
+let flags = api::Flags::DpdkFlags(dpdk_flags);
+let mut sock = dpdk::Sock::<MpscStrategy>::create("veth0", None, flags)?;
 
-    loop {
-        let Ok((pkt, _)) = sock.recv() else {
-            continue;
-        };
-        println!("Received packet: {:?}", &*pkt);
-        std::thread::sleep(Duration::from_secs(1));
-    }
-    Ok(())*/
-/* 
+loop {
+let Ok((pkt, _)) = sock.recv() else {
+continue;
+};
+println!("Received packet: {:?}", &*pkt);
+std::thread::sleep(Duration::from_secs(1));
+}
+Ok(())*/
+
 fn main() -> Result<()> {
-
-
-    procspawn::init();
-
-    let tmp = procspawn::spawn((), |_| {
-        let mut socket1 = dpdk::Sock::<MpscStrategy>::create(
-            "veth1",
-            None,
-            Flags::DpdkFlags(DpdkFlags {
-                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
-            }),
-        )
-        .unwrap();
-        println!("Created socket");
-        socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();
-        println!("Sent packet");
-        socket1.flush();
-        println!("Sent packet");
-        std::thread::sleep(Duration::from_secs(1));
-    });
     let mut socket0 = dpdk::Sock::<MpscStrategy>::create(
         "veth0",
         None,
@@ -55,23 +35,24 @@ fn main() -> Result<()> {
         }),
     )
     .unwrap();
+    let mut socket1 = dpdk::Sock::<MpscStrategy>::create(
+        "veth1",
+        None,
+        Flags::DpdkFlags(DpdkFlags {
+            strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+        }),
+    )
+    .unwrap();
+    socket0.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();
+    socket0.flush();
 
-    tmp.join().unwrap();
-    
-    for _ in 0..100 {
-       
-        let Ok((packet, meta)) = socket0.recv() else {
-            std::thread::sleep(Duration::from_millis(10));
-            continue;
-        };
-        println!("Received packet: {:?}", &*packet);
-        assert_eq!(&packet[..20], b"Helloworldmyfriend\0\0");
-    }
+    let (payload, meta) = socket1.recv()?;
+    assert_eq!(&payload[..20], b"Helloworldmyfriend\0\0");
+    println!("Received packet: {:?}", &*payload);
     Ok(())
 }
-*/
 
-fn main() -> anyhow::Result<()> {
+fn main2() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
         eprintln!("Usage: {} <server|client>", args[0]);

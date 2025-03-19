@@ -20,7 +20,6 @@ use wrapper::Transmitter;
 use crate::api;
 use crate::api::BufferConsumer;
 use crate::api::BufferProducer;
-use crate::api::Socket;
 const RX_RING_SIZE: u16 = 1024;
 const NUM_MBUFS: u32 = 8192;
 const MBUF_CACHE_SIZE: u32 = 250;
@@ -152,18 +151,6 @@ pub struct Meta {}
 
 impl api::Metadata for Meta {}
 
-fn init_data(m: *mut rte_mbuf, len: u16) -> *mut u8 {
-    unsafe {
-        (*m).__bindgen_anon_1.__bindgen_anon_1.data_off = 0;
-        if len > (*m).__bindgen_anon_2.__bindgen_anon_1.buf_len {
-            return std::ptr::null_mut();
-        }
-        (*m).__bindgen_anon_2.__bindgen_anon_1.data_len += len;
-        (*m).__bindgen_anon_2.__bindgen_anon_1.pkt_len += len as u32;
-        (*m).buf_addr as *mut u8
-    }
-}
-
 impl<S: api::Strategy> Sock<S> {
     fn flush_to_memory_pool(&mut self) {
         let mut consumer = self.consumer.borrow_mut();
@@ -277,111 +264,11 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     }
 }
 
-fn pippo() {
-    // Convert command-line arguments into C-style strings.
-    // let args: Vec<String> = env::args().collect();
-    //
-    // // Note: In the original C code argc/argv are adjusted, but we do not need that in Rust.
-    //
-    // // Create the mbuf pool.
-    // let pool_name = CString::new("MBUF_POOL").unwrap();
-    // let mbuf_pool = rte_pktmbuf_pool_create(
-    //     pool_name.as_ptr(),
-    //     NUM_MBUFS,
-    //     MBUF_CACHE_SIZE,        let data = unsafe { (*ptr).__bindgen_anon_2.__bindgen_anon_1.buf_addr as *mut u8 };
-
-    //     0,
-    //     RTE_MBUF_DEFAULT_BUF_SIZE as u16,
-    //     rte_socket_id() as i32,
-    // );
-    // if mbuf_pool.is_null() {
-    //     rte_exit(
-    //         EXIT_FAILURE as i32,
-    //         CString::new("Cannot create mbuf pool\n").unwrap().as_ptr(),
-    //     );
-    // }
-    //
-    // // Initialize the port.
-    // init_port(PORT_ID, mbuf_pool);
-
-    let (buffer_pool, mut receiver, trasmitter) = Context::new(
-        "veth0",
-        NUM_MBUFS,
-        MBUF_CACHE_SIZE,
-        RTE_MBUF_DEFAULT_BUF_SIZE as u16,
-        PORT_ID,
-        0,
-    )
-    .unwrap();
-    // Allocate an array for burst packet reception.
-
-    loop {
-        if let Some(mbuf) = receiver.iter_mut().next() {
-            let eth_hdr = unsafe { rust_rte_pktmbuf_mtod(mbuf.as_ptr()) as *mut rte_ether_hdr };
-            println!("{}", mbuf.len());
-            let ether_type = u16::from_be(unsafe { (*eth_hdr).ether_type });
-            if ether_type == CUSTOM_ETHER_TYPE {
-                let payload_ptr = unsafe { eth_hdr.offset(1) as *mut u8 };
-                let payload_len = unsafe {
-                    (*mbuf.as_ptr()).__bindgen_anon_2.__bindgen_anon_1.data_len as usize
-                        - mem::size_of::<rte_ether_hdr>()
-                };
-                let copy_len = if payload_len < 1023 {
-                    payload_len
-                } else {
-                    1023
-                };
-                let payload_slice = unsafe { slice::from_raw_parts(payload_ptr, copy_len) };
-                let received = String::from_utf8_lossy(payload_slice);
-                println!("Received: {}", received);
-            }
-        }
-    }
-    // Cleanup (never reached in this infinite loop)
-}
-
 #[derive(Clone, Debug)]
 pub struct DpdkFlags {
     pub strategy_args: api::StrategyArgs,
 }
 
-
-/*#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        api::{self, Flags, Socket},
-        netmap::Sock,
-        strategy::{MpscArgs, MpscStrategy},
-    };
-
-    #[test]
-    fn test_send_with_flush() {
-        let mut socket0 = Sock::<MpscStrategy>::create(
-            "vale0:0",
-            None,
-            Flags::Netmap(NetmapFlags {
-                extra_buf: 1024,
-                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
-            }),
-        )
-        .unwrap();
-        let mut socket1 = Sock::<MpscStrategy>::create(
-            "vale0:1",
-            None,
-            Flags::Netmap(NetmapFlags {
-                extra_buf: 1024,
-                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
-            }),
-        )
-        .unwrap();
-        socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();
-        socket1.flush();
-        let (packet, meta) = socket0.recv().unwrap();
-        assert_eq!(&packet[..20], b"Helloworldmyfriend\0\0");
-    }
-}
- */
 
 #[cfg(test)]
 mod tests {

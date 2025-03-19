@@ -11,8 +11,10 @@ use rand::RngCore;
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::ffi::CString;
+use std::io::StderrLock;
 use std::mem;
 use std::ops::Deref;
+use std::os::fd::RawFd;
 use std::os::raw::{c_char, c_int};
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
@@ -56,39 +58,12 @@ pub(crate) unsafe fn init_port(port: u16, pool: *mut rte_mempool) -> Result<()> 
     };
 
     unsafe { resultify(rte_eth_dev_start(port))? };
-    println!(
-        "Server: Port {} started, listening for Ethernet frames (EtherType 0x{:04x})",
-        port, CUSTOM_ETHER_TYPE
-    );
+
     Ok(())
 }
 
-
-
-
 fn find_port(name: &str) -> Option<u16> {
-    //     uint16_t nb_ports = rte_eth_dev_count_avail();
-
     let nb_ports = unsafe { rte_eth_dev_count_avail() };
-    if nb_ports == 0 {
-        return None;
-    }
-    /* char port_name[256];
-    for (uint16_t port_id = 0; port_id < nb_ports; port_id++) {
-        if (rte_eth_dev_get_name_by_port(port_id, port_name, sizeof(port_name)) == 0) {
-            printf("Port %u: %s\n", port_id, port_name);
-            // Now you can discriminate based on the name.
-            if (strstr(port_name, "veth1") != NULL) {
-                // Configure or handle port corresponding to veth1
-                printf("-> Port %u is for veth1\n", port_id);
-            } else if (strstr(port_name, "veth2") != NULL) {
-                // Configure or handle port corresponding to veth2
-                printf("-> Port %u is for veth2\n", port_id);
-            }
-        } else {
-            printf("Unable to get name for port %u\n", port_id);
-        }
-    } */
     for port_id in 0..nb_ports {
         let port_name = [0; 256];
         if unsafe { rte_eth_dev_get_name_by_port(port_id, port_name.as_ptr() as *mut i8) } == 0 {
@@ -100,6 +75,53 @@ fn find_port(name: &str) -> Option<u16> {
     }
     None
 }
+
+struct StderrGuard {
+    saved_fd: RawFd,
+    std_err_lock: StderrLock<'static>,
+}
+
+impl Drop for StderrGuard {
+    fn drop(&mut self) {
+        unsafe {
+            // Restore stderr from the saved file descriptor.
+            libc::dup2(self.saved_fd, libc::STDERR_FILENO);
+            libc::close(self.saved_fd);
+        }
+    }
+}
+
+fn redirect_stderr_to_null() -> io::Result<StderrGuard> {
+    let std_err_lock = std::io::stderr().lock();
+    unsafe {
+        // Save the original stderr file descriptor.
+        let saved_fd = libc::dup(libc::STDERR_FILENO);
+        if saved_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // Open /dev/null.
+        let devnull = CString::new("/dev/null").unwrap();
+        let fd_devnull = libc::open(devnull.as_ptr(), libc::O_WRONLY);
+        if fd_devnull < 0 {
+            libc::close(saved_fd);
+            return Err(io::Error::last_os_error());
+        }
+
+        // Redirect stderr to /dev/null.
+        if libc::dup2(fd_devnull, libc::STDERR_FILENO) < 0 {
+            libc::close(saved_fd);
+            libc::close(fd_devnull);
+            return Err(io::Error::last_os_error());
+        }
+
+        // Close the extra file descriptor.
+        libc::close(fd_devnull);
+
+        Ok(StderrGuard { saved_fd, std_err_lock })
+    }
+}
+
 pub(crate) struct Context {
     file_prefix: u64,
     ptr: *mut rte_mempool,
@@ -116,7 +138,9 @@ impl Context {
         port_id: u16,
         queue_id: u16,
     ) -> Result<Self> {
-        let tmp = LazyLock::new(|| -> Result<_> {
+        let _guard = redirect_stderr_to_null()?;
+        static FILE_PREFIX: LazyLock<Result<u64>> = LazyLock::new(|| -> Result<_> {
+            //let _guard = redirect_stderr_to_null()?;
             let random_name = rand::rng().next_u64().to_string();
             let file_prefix = rand::rng().next_u64();
             let file_prefix_str = format!("--file-prefix={}", file_prefix);
@@ -134,19 +158,14 @@ impl Context {
                 .collect();
             let argc = c_ptrs.len() as c_int;
 
-            // Initialize the DPDK Environment Abstraction Layer.
-
             unsafe { resultify(rte_eal_init(argc, c_ptrs.as_mut_ptr()))? };
             Ok(file_prefix)
         });
-        let file_prefix = *tmp.as_ref().map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-        //let s = format!("iface={}", iface);
-        //let c_str = CString::new(s).unwrap();
-        //let ret = unsafe { rte_vdev_init(c"net_af_packet0".as_ptr(), c_str.as_ptr()) };
-        //if ret < 0 {
-        //    bail!("Cannot create vdev");
-        //}
+        let file_prefix = *FILE_PREFIX
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
 
         let c_str = CString::from_str(&format!("iface={}", iface)).unwrap();
         let name = format!("net_af_packet_{}", iface);
@@ -155,10 +174,11 @@ impl Context {
         if ret < 0 {
             bail!("Cannot create vdev");
         }
+        let random_name = rand::rng().next_u64().to_string();
 
         let mbuf_pool = unsafe {
             rte_pktmbuf_pool_create(
-                std::ptr::null(),
+                CString::new(random_name).unwrap().as_ptr(),
                 num_mbufs,
                 mbuf_cache_size,
                 0,
@@ -179,46 +199,6 @@ impl Context {
             port_id,
             queue_id,
         })
-        /* char port_name[256];
-        for (uint16_t port_id = 0; port_id < nb_ports; port_id++) {
-            if (rte_eth_dev_get_name_by_port(port_id, port_name, sizeof(port_name)) == 0) {
-                printf("Port %u: %s\n", port_id, port_name);
-                // Now you can discriminate based on the name.
-                if (strstr(port_name, "veth1") != NULL) {
-                    // Configure or handle port corresponding to veth1
-                    printf("-> Port %u is for veth1\n", port_id);
-                } else if (strstr(port_name, "veth2") != NULL) {
-                    // Configure or handle port corresponding to veth2
-                    printf("-> Port %u is for veth2\n", port_id);
-                }
-            } else {
-                printf("Unable to get name for port %u\n", port_id);
-            }
-        } */
-
-        /*let mbuf_pool = unsafe {
-            rte_pktmbuf_pool_create(
-                std::ptr::null(),
-                num_mbufs,
-                mbuf_cache_size,
-                0,
-                mbuf_default_buf_size,
-                rte_socket_id() as i32,
-            )
-        };
-        if mbuf_pool.is_null() {
-            bail!("Cannot create mbuf pool");
-        }
-        let port_id = find_port(iface).ok_or_else(|| anyhow::anyhow!("Cannot find port"))?;
-        unsafe {
-            init_port(port_id, mbuf_pool)?;
-        }
-        Ok(Context {
-            file_prefix,
-            ptr: mbuf_pool,
-            port_id,
-            queue_id,
-        })*/
     }
 
     pub(crate) fn new(
