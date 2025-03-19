@@ -36,6 +36,7 @@ fn main() {
     println!("cargo:rerun-if-changed=lib.h");
     // Use pkg-config to locate the dpdk library and get its compile options.
     let dpdk = pkg_config::Config::new()
+        //.statik(true)
         .probe("libdpdk")
         .expect("Could not find dpdk via pkg-config");
 
@@ -53,7 +54,11 @@ fn main() {
         build.define(&define, value.as_ref().map(|s| s.as_str()));
     }
 
+    println!("cargo:rustc-link-lib=rte_bus_vdev");
+
     build.flag("-mssse3");
+
+    //build.flag("-lrte_bus_vdev");
     // Compile lib.c into a static library (e.g., liblib.a).
     build.compile("lib");
 

@@ -644,7 +644,7 @@ mod tests {
     #[test]
     fn test_send_with_flush() {
         let mut socket0 = Sock::<MpscStrategy>::create(
-            "veth_test0:0",
+            "veth0:0",
             None,
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
@@ -654,7 +654,7 @@ mod tests {
         )
         .unwrap();
         let mut socket1 = Sock::<MpscStrategy>::create(
-            "veth_test1:0",
+            "veth1:0",
             None,
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,

@@ -5,17 +5,20 @@ const BURST_SIZE: u16 = 32;
 const CUSTOM_ETHER_TYPE: u16 = 0x88B5;
 const PORT_ID: u16 = 0;
 use anyhow::{Result, bail};
+use arrayvec::ArrayVec;
 use dpdk_sys::*;
 use rand::RngCore;
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::ffi::CString;
 use std::mem;
+use std::ops::Deref;
 use std::os::raw::{c_char, c_int};
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
 use std::slice;
-use std::sync::Arc;
+use std::str::FromStr;
+use std::sync::{Arc, LazyLock};
 use std::{env, io};
 
 pub(crate) fn resultify(x: i32) -> io::Result<u32> {
@@ -59,6 +62,44 @@ pub(crate) unsafe fn init_port(port: u16, pool: *mut rte_mempool) -> Result<()> 
     );
     Ok(())
 }
+
+
+
+
+fn find_port(name: &str) -> Option<u16> {
+    //     uint16_t nb_ports = rte_eth_dev_count_avail();
+
+    let nb_ports = unsafe { rte_eth_dev_count_avail() };
+    if nb_ports == 0 {
+        return None;
+    }
+    /* char port_name[256];
+    for (uint16_t port_id = 0; port_id < nb_ports; port_id++) {
+        if (rte_eth_dev_get_name_by_port(port_id, port_name, sizeof(port_name)) == 0) {
+            printf("Port %u: %s\n", port_id, port_name);
+            // Now you can discriminate based on the name.
+            if (strstr(port_name, "veth1") != NULL) {
+                // Configure or handle port corresponding to veth1
+                printf("-> Port %u is for veth1\n", port_id);
+            } else if (strstr(port_name, "veth2") != NULL) {
+                // Configure or handle port corresponding to veth2
+                printf("-> Port %u is for veth2\n", port_id);
+            }
+        } else {
+            printf("Unable to get name for port %u\n", port_id);
+        }
+    } */
+    for port_id in 0..nb_ports {
+        let port_name = [0; 256];
+        if unsafe { rte_eth_dev_get_name_by_port(port_id, port_name.as_ptr() as *mut i8) } == 0 {
+            let port_name = unsafe { std::ffi::CStr::from_ptr(port_name.as_ptr() as *const i8) };
+            if port_name.to_str().unwrap() == name {
+                return Some(port_id);
+            }
+        }
+    }
+    None
+}
 pub(crate) struct Context {
     file_prefix: u64,
     ptr: *mut rte_mempool,
@@ -75,25 +116,46 @@ impl Context {
         port_id: u16,
         queue_id: u16,
     ) -> Result<Self> {
-        let file_prefix = rand::rng().next_u64();
-        let file_prefix_str = format!("--file-prefix={}", file_prefix);
-        let vdev = format!("--vdev=net_af_packet0,iface={}", "veth0");
-        let init_args = vec![iface.to_string(), file_prefix_str, vdev];
-        //println!("Server: Starting with arguments: {:?}", args);
-        let mut cstrings: Vec<CString> = init_args
-            .iter()
-            .map(|arg| CString::new(arg.as_str()).unwrap())
-            .collect();
-        // Build a mutable array of *mut c_char pointers.
-        let mut c_ptrs: Vec<*mut c_char> = cstrings
-            .iter_mut()
-            .map(|cstr| cstr.as_ptr() as *mut c_char)
-            .collect();
-        let argc = c_ptrs.len() as c_int;
+        let tmp = LazyLock::new(|| -> Result<_> {
+            let random_name = rand::rng().next_u64().to_string();
+            let file_prefix = rand::rng().next_u64();
+            let file_prefix_str = format!("--file-prefix={}", file_prefix);
+            //let vdev = format!("--vdev=net_af_packet0,iface={}", iface);
+            let init_args = vec![random_name, file_prefix_str];
+            //println!("Server: Starting with arguments: {:?}", args);
+            let mut cstrings: Vec<CString> = init_args
+                .iter()
+                .map(|arg| CString::new(arg.as_str()).unwrap())
+                .collect();
+            // Build a mutable array of *mut c_char pointers.
+            let mut c_ptrs: Vec<*mut c_char> = cstrings
+                .iter_mut()
+                .map(|cstr| cstr.as_ptr() as *mut c_char)
+                .collect();
+            let argc = c_ptrs.len() as c_int;
 
-        // Initialize the DPDK Environment Abstraction Layer.
+            // Initialize the DPDK Environment Abstraction Layer.
 
-        unsafe { resultify(rte_eal_init(argc, c_ptrs.as_mut_ptr()))? };
+            unsafe { resultify(rte_eal_init(argc, c_ptrs.as_mut_ptr()))? };
+            Ok(file_prefix)
+        });
+        let file_prefix = *tmp.as_ref().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        //let s = format!("iface={}", iface);
+        //let c_str = CString::new(s).unwrap();
+        //let ret = unsafe { rte_vdev_init(c"net_af_packet0".as_ptr(), c_str.as_ptr()) };
+        //if ret < 0 {
+        //    bail!("Cannot create vdev");
+        //}
+
+        let c_str = CString::from_str(&format!("iface={}", iface)).unwrap();
+        let name = format!("net_af_packet_{}", iface);
+        let name = CString::new(name).unwrap();
+        let ret = unsafe { rte_vdev_init(name.as_ptr(), c_str.as_ptr()) };
+        if ret < 0 {
+            bail!("Cannot create vdev");
+        }
+
         let mbuf_pool = unsafe {
             rte_pktmbuf_pool_create(
                 std::ptr::null(),
@@ -107,6 +169,7 @@ impl Context {
         if mbuf_pool.is_null() {
             bail!("Cannot create mbuf pool");
         }
+        let port_id = find_port(name.to_str().unwrap()).expect("Cannot find port");
         unsafe {
             init_port(port_id, mbuf_pool)?;
         }
@@ -116,6 +179,46 @@ impl Context {
             port_id,
             queue_id,
         })
+        /* char port_name[256];
+        for (uint16_t port_id = 0; port_id < nb_ports; port_id++) {
+            if (rte_eth_dev_get_name_by_port(port_id, port_name, sizeof(port_name)) == 0) {
+                printf("Port %u: %s\n", port_id, port_name);
+                // Now you can discriminate based on the name.
+                if (strstr(port_name, "veth1") != NULL) {
+                    // Configure or handle port corresponding to veth1
+                    printf("-> Port %u is for veth1\n", port_id);
+                } else if (strstr(port_name, "veth2") != NULL) {
+                    // Configure or handle port corresponding to veth2
+                    printf("-> Port %u is for veth2\n", port_id);
+                }
+            } else {
+                printf("Unable to get name for port %u\n", port_id);
+            }
+        } */
+
+        /*let mbuf_pool = unsafe {
+            rte_pktmbuf_pool_create(
+                std::ptr::null(),
+                num_mbufs,
+                mbuf_cache_size,
+                0,
+                mbuf_default_buf_size,
+                rte_socket_id() as i32,
+            )
+        };
+        if mbuf_pool.is_null() {
+            bail!("Cannot create mbuf pool");
+        }
+        let port_id = find_port(iface).ok_or_else(|| anyhow::anyhow!("Cannot find port"))?;
+        unsafe {
+            init_port(port_id, mbuf_pool)?;
+        }
+        Ok(Context {
+            file_prefix,
+            ptr: mbuf_pool,
+            port_id,
+            queue_id,
+        })*/
     }
 
     pub(crate) fn new(
@@ -153,12 +256,14 @@ impl Context {
             port_id,
             queue_id,
         };
-        let trasmitter = Transmitter {
-            ctx,
-            mempool,
-            bufs: [ptr::null_mut(); BURST_SIZE as usize],
-            index: 0,
-        };
+
+        let trasmitter = Transmitter::new(ctx, mempool);
+        // {
+        //    ctx,
+        //    mempool,
+        //    bufs: ArrayVec::new(),
+        //    ready_bufs: ArrayVec::new()
+        //};
         (buffer_pool, receiver, trasmitter)
     }
 }
@@ -277,33 +382,51 @@ impl<'a> Iterator for ReceiverIterMut<'a> {
 pub(crate) struct Transmitter {
     ctx: Arc<UnsafeCell<Context>>,
     mempool: *mut rte_mempool,
-    bufs: [*mut rte_mbuf; BURST_SIZE as usize],
-    index: usize,
+    // bufs: [*mut rte_mbuf; BURST_SIZE as usize],
+    bufs: ArrayVec<*mut rte_mbuf, { BURST_SIZE as usize }>,
+    ready_bufs: ArrayVec<NonNull<rte_mbuf>, { BURST_SIZE as usize }>,
+    //index: usize,
 }
 
 impl Transmitter {
-    fn iter_mut(&mut self) -> TransmitterIterMut {
+    pub(crate) fn iter_mut(&mut self) -> TransmitterIterMut {
         TransmitterIterMut { tx: self }
     }
 
-    fn flush(&mut self) {
+    pub(crate) fn flush(&mut self) {
         let port_id = unsafe { (*self.ctx.get()).port_id };
         let queue_id = unsafe { (*self.ctx.get()).queue_id };
         let sent = unsafe {
-            rust_rte_eth_tx_burst(port_id, queue_id, self.bufs.as_mut_ptr(), self.index as u16)
+            let len = self.ready_bufs.len();
+            let ready_bufs: *mut *mut rte_mbuf = self.ready_bufs.as_mut_ptr() as *mut *mut _;
+            rust_rte_eth_tx_burst(port_id, queue_id, ready_bufs, len as u16)
         } as usize;
-        let rem = BURST_SIZE as usize - sent;
-        if rem > 0 {
-            for i in 0..rem {
-                self.bufs[i] = self.bufs[sent + i];
-            }
-            for i in rem..BURST_SIZE as usize {
-                self.bufs[i] = ptr::null_mut();
-            }
+        self.ready_bufs.drain(..sent);
+    }
 
-            self.index = sent;
-        } else {
-            self.index = BURST_SIZE as usize;
+    fn new(ctx: Arc<UnsafeCell<Context>>, mempool: *mut rte_mempool) -> Self {
+        let mut bufs = ArrayVec::new();
+        while !bufs.is_full() {
+            bufs.push(ptr::null_mut());
+        }
+
+        let ret = unsafe {
+            rust_rte_pktmbuf_alloc_bulk(
+                mempool,
+                bufs.as_mut_ptr() as *mut *mut _,
+                bufs.capacity() as u32,
+            )
+        };
+
+        if ret != 0 {
+            panic!("Cannot allocate mbufs");
+        }
+
+        Self {
+            ctx,
+            mempool,
+            bufs,
+            ready_bufs: ArrayVec::new(),
         }
     }
 }
@@ -314,32 +437,44 @@ pub(crate) struct TransmitterIterMut<'a> {
 
 impl<'a> TransmitterIterMut<'a> {
     fn advance(&mut self) -> Option<NonNull<rte_mbuf>> {
-        if self.tx.index == BURST_SIZE as usize {
+        if self.tx.ready_bufs.is_full() {
             self.tx.flush();
+            let old_len = self.tx.ready_bufs.len();
+            let can_ask = self.tx.bufs.capacity() - old_len;
+            while !self.tx.bufs.is_full() {
+                self.tx.bufs.push(ptr::null_mut());
+            }
+
+            let slice = &mut self.tx.bufs[old_len..];
+
             let res = unsafe {
                 rust_rte_pktmbuf_alloc_bulk(
                     self.tx.mempool,
-                    self.tx.bufs.as_mut_ptr(),
-                    BURST_SIZE as u32,
+                    slice.as_mut_ptr() as *mut *mut _,
+                    can_ask as u32,
                 )
             };
-            if res == 0 {
+            if res != 0 {
+                for _ in 0..can_ask {
+                    self.tx.bufs.pop().unwrap();
+                }
                 return None;
             }
-            self.tx.index = 0;
-        } else if self.tx.index >= BURST_SIZE as usize {
-            panic!("BUG: index out of bounds");
         }
-        let buf = self.tx.bufs[self.tx.index];
-        self.tx.index += 1;
-        Some(NonNull::new(buf).unwrap())
+        self.tx.bufs.pop().map(|buf| NonNull::new(buf).unwrap())
     }
 }
 
 pub(crate) struct RteMBufRef<'a> {
     ptr: NonNull<rte_mbuf>,
-    len: usize,
     _marker: std::marker::PhantomData<&'a mut TransmitterIterMut<'a>>,
+    tx_iter: *mut TransmitterIterMut<'a>,
+}
+
+impl<'a> RteMBufRef<'a> {
+    pub(crate) fn as_ptr(&self) -> NonNull<rte_mbuf> {
+        self.ptr
+    }
 }
 
 impl<'a> Iterator for TransmitterIterMut<'a> {
@@ -347,12 +482,18 @@ impl<'a> Iterator for TransmitterIterMut<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let tmp = self.advance()?;
-        let len = unsafe { (*tmp.as_ptr()).__bindgen_anon_2.__bindgen_anon_1.pkt_len as usize };
         Some(RteMBufRef {
             ptr: tmp,
-            len,
             _marker: std::marker::PhantomData,
+            tx_iter: self,
         })
+    }
+}
+
+impl<'a> Drop for RteMBufRef<'a> {
+    fn drop(&mut self) {
+        let tx = unsafe { &mut (*self.tx_iter).tx };
+        tx.ready_bufs.push(self.ptr);
     }
 }
 

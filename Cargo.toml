@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.95"
+anyhow = { version = "1.0.95", features = ["backtrace"] }
 clap = { version = "4.5.31", features = ["derive"] }
 ctrlc = "3.4.5"
 etherparse = "0.17.0"
@@ -21,6 +21,8 @@ crossbeam-queue = "0.3.12"
 ringbuf = "0.4.7"
 dpdk-sys = { path = "dpdk-sys" }
 rand = "0.9.0"
+procspawn = "1.0.1"
+arrayvec = "0.7.6"
 
 #libxdp-sys = { path = "libxdp-sys" }
 

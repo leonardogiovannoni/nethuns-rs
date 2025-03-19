@@ -8,6 +8,7 @@
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 #include <rte_ether.h>
+#include <rte_bus_vdev.h>
 
 const size_t RTE_ETHER_ADDR_SIZE = sizeof(struct rte_ether_addr);
 const size_t RTE_ARP_IPV4_SIZE = sizeof(struct rte_arp_ipv4);

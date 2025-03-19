@@ -2,8 +2,6 @@ mod wrapper;
 use anyhow::{Result, bail};
 use dpdk_sys::*;
 use etherparse::err::packet;
-use wrapper::RteMBuf;
-use wrapper::RteMBufRef;
 use std::cell::RefCell;
 use std::cell::UnsafeCell;
 use std::mem;
@@ -15,6 +13,8 @@ use std::sync::atomic::Ordering;
 use wrapper::BufferPool;
 use wrapper::Context;
 use wrapper::Receiver;
+use wrapper::RteMBuf;
+use wrapper::RteMBufRef;
 use wrapper::Transmitter;
 
 use crate::api;
@@ -106,7 +106,6 @@ impl<S: api::Strategy> api::Token for Tok<S> {
     fn pool_id(&self) -> usize {
         self.pool_id
     }
-
 }
 
 impl<S: api::Strategy> api::TokenExt for Tok<S> {
@@ -153,13 +152,25 @@ pub struct Meta {}
 
 impl api::Metadata for Meta {}
 
+fn init_data(m: *mut rte_mbuf, len: u16) -> *mut u8 {
+    unsafe {
+        (*m).__bindgen_anon_1.__bindgen_anon_1.data_off = 0;
+        if len > (*m).__bindgen_anon_2.__bindgen_anon_1.buf_len {
+            return std::ptr::null_mut();
+        }
+        (*m).__bindgen_anon_2.__bindgen_anon_1.data_len += len;
+        (*m).__bindgen_anon_2.__bindgen_anon_1.pkt_len += len as u32;
+        (*m).buf_addr as *mut u8
+    }
+}
+
 impl<S: api::Strategy> Sock<S> {
     fn flush_to_memory_pool(&mut self) {
         let mut consumer = self.consumer.borrow_mut();
         loop {
             let mut b = false;
             while let Some(val) = consumer.pop() {
-                self.ctx.free(val);                
+                self.ctx.free(val);
                 b = true;
             }
             if !b {
@@ -167,24 +178,35 @@ impl<S: api::Strategy> Sock<S> {
             }
 
             consumer.sync();
-         }
+        }
     }
 
     fn recv_inner(&self, buf: RteMBuf) -> Result<(Tok<S>, Meta)> {
         let token = buf.as_ptr() as usize;
         let token = api::BufferIndex::from(token);
         let token = Tok::new(token, api::Context::pool_id(&self.ctx));
-        
+
         // TODO: filter stuff..
 
         Ok((ManuallyDrop::into_inner(token), Meta {}))
     }
 
     fn send_inner(&self, scan: RteMBufRef, packet: &[u8]) -> Result<()> {
-        
+        let m = scan.as_ptr().as_ptr();
+        let len = packet.len() as u16;
+        let buf = unsafe {
+            if len > (*m).__bindgen_anon_2.__bindgen_anon_1.buf_len {
+                bail!("Packet too big");
+            }
+            (*m).__bindgen_anon_1.__bindgen_anon_1.data_off = 0;
+            (*m).__bindgen_anon_2.__bindgen_anon_1.data_len += len;
+            (*m).__bindgen_anon_2.__bindgen_anon_1.pkt_len += len as u32;
+            (*m).buf_addr as *mut u8
+        };
+        let slice_mut = unsafe { slice::from_raw_parts_mut(buf, len as usize) };
+        slice_mut.copy_from_slice(packet);
         Ok(())
     }
-
 }
 
 impl<S: api::Strategy> api::Socket<S> for Sock<S> {
@@ -199,17 +221,30 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         } else {
             self.flush_to_memory_pool();
             let mut rx = self.rx.borrow_mut();
-            let tmp = rx.iter_mut().next().ok_or_else(|| anyhow::anyhow!("No packets"))?;
+            let tmp = rx
+                .iter_mut()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("No packets"))?;
             self.recv_inner(tmp)
         }
     }
 
     fn send(&mut self, packet: &[u8]) -> anyhow::Result<()> {
-        todo!()
+        if let Some(scan) = self.tx.borrow_mut().iter_mut().next() {
+            self.send_inner(scan, packet)
+        } else {
+            self.flush_to_memory_pool();
+            let mut tx = self.tx.borrow_mut();
+            let scan = tx
+                .iter_mut()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("No packets"))?;
+            self.send_inner(scan, packet)
+        }
     }
 
     fn flush(&mut self) {
-        todo!()
+        self.tx.borrow_mut().flush();
     }
 
     fn create(portspec: &str, filter: Option<()>, flags: api::Flags) -> anyhow::Result<Self> {
@@ -235,7 +270,6 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             consumer: RefCell::new(consumer),
             filter,
         })
-        
     }
 
     fn context(&self) -> &Self::Context {
@@ -309,4 +343,75 @@ fn pippo() {
 #[derive(Clone, Debug)]
 pub struct DpdkFlags {
     pub strategy_args: api::StrategyArgs,
+}
+
+
+/*#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        api::{self, Flags, Socket},
+        netmap::Sock,
+        strategy::{MpscArgs, MpscStrategy},
+    };
+
+    #[test]
+    fn test_send_with_flush() {
+        let mut socket0 = Sock::<MpscStrategy>::create(
+            "vale0:0",
+            None,
+            Flags::Netmap(NetmapFlags {
+                extra_buf: 1024,
+                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+            }),
+        )
+        .unwrap();
+        let mut socket1 = Sock::<MpscStrategy>::create(
+            "vale0:1",
+            None,
+            Flags::Netmap(NetmapFlags {
+                extra_buf: 1024,
+                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+            }),
+        )
+        .unwrap();
+        socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();
+        socket1.flush();
+        let (packet, meta) = socket0.recv().unwrap();
+        assert_eq!(&packet[..20], b"Helloworldmyfriend\0\0");
+    }
+}
+ */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        api::{self, Flags, Socket},
+        strategy::{MpscArgs, MpscStrategy},
+    };
+
+    #[test]
+    fn test_send_with_flush() {
+       let mut socket0 = Sock::<MpscStrategy>::create(
+            "veth0",
+            None,
+            Flags::DpdkFlags(DpdkFlags {
+                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+            }),
+        )
+        .unwrap();
+        let mut socket1 = Sock::<MpscStrategy>::create(
+            "veth1",
+            None,
+            Flags::DpdkFlags(DpdkFlags {
+                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+            }),
+        )
+        .unwrap();
+        socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();
+        socket1.flush();
+        let (packet, meta) = socket0.recv().unwrap();
+        assert_eq!(&packet[..20], b"Helloworldmyfriend\0\0");
+    }
 }
