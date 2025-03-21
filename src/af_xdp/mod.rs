@@ -301,7 +301,7 @@ impl<S: api::Strategy> api::Token for Tok<S> {
 }
 
 impl<S: api::Strategy> api::TokenExt for Tok<S> {
-    fn clone(&self) -> Self {
+    fn duplicate(&self) -> Self {
         Tok {
             idx: self.idx,
             len: self.len,
@@ -511,6 +511,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
 
     fn create(
         portspec: &str,
+        queue: Option<usize>,
         filter: Option<()>,
         flags: api::Flags,
     ) -> anyhow::Result<Self> {
@@ -534,13 +535,13 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         }
         let mut umem_manager = UmemManager::create_with_buffer(umem.clone(), consumer)?;
 
-        let port = Port::parse(portspec)?;
-
+        // let port = Port::parse(portspec)?;
+       
         let socket = unsafe {
             XskSocket::create(
                 &umem_manager.umem,
-                &port.ifname,
-                port.queue_id,
+                portspec,
+                queue.unwrap_or(0) as u32,
                 xdp_flags,
                 bind_flags,
             )?
@@ -628,7 +629,8 @@ mod tests {
     #[test]
     fn test_send_with_flush() {
         let mut socket0 = Sock::<MpscStrategy>::create(
-            "veth0af_xdp:0",
+            "veth0af_xdp",
+            Some(0),
             None,
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
@@ -638,7 +640,8 @@ mod tests {
         )
         .unwrap();
         let mut socket1 = Sock::<MpscStrategy>::create(
-            "veth1af_xdp:0",
+            "veth1af_xdp",
+            Some(0),
             None,
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,

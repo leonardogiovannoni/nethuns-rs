@@ -32,6 +32,8 @@ use crossbeam_queue::ArrayQueue;
 struct Args {
     /// Input interface name.
     in_if: String,
+    // Queue
+    queue: Option<usize>,
     /// Output interface name.
     out_if: String,
 
@@ -115,9 +117,8 @@ where
     let out_if = args.out_if.clone();
     let flags_consumer = flags.clone();
 
-    let mut in_socket = Sock::create(&args.in_if, None, flags.clone())?;
-
-    let mut out_socket = Sock::create(&out_if, None, flags_consumer)?;
+    let mut in_socket = Sock::create(&args.in_if, args.queue, None, flags.clone())?;
+    let mut out_socket = Sock::create(&out_if, args.queue, None, flags_consumer)?;
     {
         let in_ctx = in_socket.context().clone();
         thread::spawn(move || -> Result<()> {

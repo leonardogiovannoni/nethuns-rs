@@ -93,7 +93,7 @@ impl<S: api::Strategy> api::Token for Tok<S> {
 }
 
 impl<S: api::Strategy> api::TokenExt for Tok<S> {
-    fn clone(&self) -> Self {
+    fn duplicate(&self) -> Self {
         Self {
             idx: self.idx,
             pool_id: self.pool_id,
@@ -216,7 +216,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         self.tx.borrow_mut().flush();
     }
 
-    fn create(portspec: &str, filter: Option<()>, flags: api::Flags) -> anyhow::Result<Self> {
+    fn create(portspec: &str, queue: Option<usize>, filter: Option<()>, flags: api::Flags) -> anyhow::Result<Self> {
         let flags = match flags {
             api::Flags::DpdkFlags(flags) => flags,
             _ => panic!("Invalid flags"),
@@ -227,7 +227,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             flags.num_mbufs,
             flags.mbuf_cache_size,
             flags.mbuf_default_buf_size,
-            flags.queue_id,
+            queue.unwrap_or(0) as u16, 
         )?;
 
         let (ctx, consumer) = Ctx::new(flags.strategy_args);
@@ -251,7 +251,6 @@ pub struct DpdkFlags {
     pub num_mbufs: u32,
     pub mbuf_cache_size: u32,
     pub mbuf_default_buf_size: u16,
-    pub queue_id: u16,
 }
 
 #[cfg(test)]
@@ -266,25 +265,25 @@ mod tests {
     fn test_send_with_flush() {
         let mut socket0 = Sock::<MpscStrategy>::create(
             "veth0dpdk",
+            Some(0),
             None,
             Flags::DpdkFlags(DpdkFlags {
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
                 num_mbufs: 8192,
                 mbuf_cache_size: 250,
                 mbuf_default_buf_size: 2176,
-                queue_id: 0,
             }),
         )
         .unwrap();
         let mut socket1 = Sock::<MpscStrategy>::create(
             "veth1dpdk",
+            Some(0),
             None,
             Flags::DpdkFlags(DpdkFlags {
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
                 num_mbufs: 8192,
                 mbuf_cache_size: 250,
                 mbuf_default_buf_size: 2176,
-                queue_id: 0,
             }),
         )
         .unwrap();

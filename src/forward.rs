@@ -1,15 +1,19 @@
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::thread;
 use std::time::Duration;
 
 // Import the framework APIs.
-use crate::{af_xdp, api::{Flags, Socket, Strategy, StrategyArgs}, netmap};
 use crate::strategy::{MpscArgs, MpscStrategy};
+use crate::{
+    af_xdp,
+    api::{Flags, Socket, Strategy, StrategyArgs},
+    netmap,
+};
 
 /// Command-line arguments.
 #[derive(Parser, Debug)]
@@ -17,6 +21,10 @@ use crate::strategy::{MpscArgs, MpscStrategy};
 struct Args {
     /// Input interface name.
     in_if: String,
+
+    // Queue
+    queue: Option<usize>,
+
     /// Output interface name.
     out_if: String,
 
@@ -112,8 +120,8 @@ where
     println!("  Output interface: {}", args.out_if);
 
     // Create the input and output sockets using the selected framework.
-    let mut in_socket = Sock::create(&args.in_if, None, flags.clone())?;
-    let mut out_socket = Sock::create(&args.out_if, None, flags.clone())?;
+    let mut in_socket = Sock::create(&args.in_if, args.queue, None, flags.clone())?;
+    let mut out_socket = Sock::create(&args.out_if, args.queue, None, flags.clone())?;
 
     // Atomic counters for received and forwarded packets.
     let total_rcv = Arc::new(AtomicU64::new(0));

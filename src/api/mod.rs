@@ -4,6 +4,7 @@ use crate::{
     af_xdp::AfXdpFlags, dpdk::DpdkFlags, netmap::NetmapFlags, strategy::{CrossbeamArgs, MpscArgs, StdArgs}
 };
 
+
 pub trait Strategy: Send + Clone + 'static {
     type Producer: BufferProducer;
     type Consumer: BufferConsumer;
@@ -24,17 +25,6 @@ pub(crate) trait BufferConsumer: Send {
 #[derive(Clone, Copy, Debug)]
 pub struct BufferIndex(usize);
 
-//impl From<u32> for BufferIndex {
-//    fn from(val: u32) -> Self {
-//        Self((val as usize).into())
-//    }
-//}
-//
-//impl From<BufferIndex> for u32 {
-//    fn from(val: BufferIndex) -> u32 {
-//        (val.0 as u32).into()
-//    }
-//}
 
 impl From<usize> for BufferIndex {
     fn from(val: usize) -> Self {
@@ -120,7 +110,7 @@ pub trait Token: Sized + Send {
 }
 
 pub(crate) trait TokenExt {
-    fn clone(&self) -> Self;
+    fn duplicate(&self) -> Self;
 }
 
 /// A trait representing the buffer pool (or context) that is used by the
@@ -155,12 +145,16 @@ pub(crate) trait ContextExt: Context {
         if !self.check_token(token) {
             panic!("Invalid token");
         }
-        let token = TokenExt::clone(token);
+        let token = TokenExt::duplicate(token);
         Payload::new(token, self)
     }
 }
 
-
+/*pub trait Socket<S, F>
+where
+    S: Strategy,
+    F: FnOnce(Self::Metadata, Payload<'_, Self::Context>) -> bool + Send,
+{ */
 /// The common API for a network socket, which can send, receive, and flush.
 pub trait Socket<S: Strategy>: Send + Sized {
     /// The associated context.
@@ -194,6 +188,7 @@ pub trait Socket<S: Strategy>: Send + Sized {
 
     fn create(
         portspec: &str,
+        queue: Option<usize>,
         filter: Option<()>,
         flags: Flags,
     ) -> anyhow::Result<Self>;

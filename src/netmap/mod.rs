@@ -6,7 +6,6 @@ use std::cell::RefCell;
 //use std::cell::RefCell;
 use crate::api::ContextExt;
 use std::mem::ManuallyDrop;
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -104,7 +103,7 @@ impl<S: api::Strategy> api::Token for Tok<S> {
 }
 
 impl<S: api::Strategy> api::TokenExt for Tok<S> {
-    fn clone(&self) -> Self {
+    fn duplicate(&self) -> Self {
         ManuallyDrop::into_inner(Self::new(usize::from(self.idx) as u32, self.buffer_pool))
     }
 }
@@ -232,12 +231,19 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         }
     }
 
-    fn create(portspec: &str, filter: Option<()>, flags: api::Flags) -> anyhow::Result<Self> {
+    fn create(portspec: &str, queue: Option<usize>, filter: Option<()>, flags: api::Flags) -> anyhow::Result<Self> {
         let flags = match flags {
             api::Flags::Netmap(flags) => flags,
             _ => panic!("Invalid flags"),
         };
-        let mut port = Port::open(portspec, flags.extra_buf)?;
+
+        let p = if let Some(q) = queue {
+            &format!("{}:{}", portspec, q)
+        } else {
+            portspec
+        };
+
+        let mut port = Port::open(p, flags.extra_buf)?;
         let extra_bufs = unsafe { port.extra_buffers_indexes() };
         let (tx, rx, buffer_pool) = port.split();
         let (ctx, consumer) = Ctx::new(buffer_pool, extra_bufs, flags.strategy_args);
@@ -277,7 +283,8 @@ mod tests {
     #[test]
     fn test_send_with_flush() {
         let mut socket0 = Sock::<MpscStrategy>::create(
-            "vale0:0",
+            "vale0",
+            Some(0),
             None,
             Flags::Netmap(NetmapFlags {
                 extra_buf: 1024,
@@ -286,7 +293,8 @@ mod tests {
         )
         .unwrap();
         let mut socket1 = Sock::<MpscStrategy>::create(
-            "vale0:1",
+            "vale0",
+            Some(1),
             None,
             Flags::Netmap(NetmapFlags {
                 extra_buf: 1024,

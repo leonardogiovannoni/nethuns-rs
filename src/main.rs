@@ -29,26 +29,26 @@ Ok(())*/
 fn main2() -> Result<()> {
     let mut socket0 = dpdk::Sock::<MpscStrategy>::create(
         "veth0",
+        Some(0),
         None,
         Flags::DpdkFlags(dpdk::DpdkFlags {
             strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
             num_mbufs: 8192,
             mbuf_cache_size: 250,
             mbuf_default_buf_size: 2176,
-            queue_id: 0,
             
         }),
     )
     .unwrap();
     let mut socket1 = dpdk::Sock::<MpscStrategy>::create(
         "veth1",
+        Some(0),
         None,
         Flags::DpdkFlags(DpdkFlags {
             strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
             num_mbufs: 8192,
             mbuf_cache_size: 250,
             mbuf_default_buf_size: 2176,
-            queue_id: 0,
         }),
     )
     .unwrap();
@@ -65,7 +65,8 @@ fn main2() -> Result<()> {
 
 fn main() -> Result<()> {
     let mut socket0 = af_xdp::Sock::<MpscStrategy>::create(
-        "veth0:0",
+        "veth0",
+        Some(0),
         None,
         Flags::AfXdp(af_xdp::AfXdpFlags {
             xdp_flags: 0,
@@ -75,7 +76,8 @@ fn main() -> Result<()> {
     )
     .unwrap();
     let mut socket1 = af_xdp::Sock::<MpscStrategy>::create(
-        "veth1:0",
+        "veth1",
+        Some(0),
         None,
         Flags::AfXdp(af_xdp::AfXdpFlags {
             xdp_flags: 0,
