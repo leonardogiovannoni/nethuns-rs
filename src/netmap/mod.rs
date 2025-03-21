@@ -51,7 +51,7 @@ impl<S: api::Strategy> api::Context for Ctx<S> {
     }
 
     unsafe fn unsafe_buffer(&self, buf_idx: api::BufferIndex, _size: usize) -> *mut [u8] {
-        unsafe { Ctx::buffer(self, buf_idx) }
+        unsafe { Ctx::<S>::buffer(self, buf_idx) }
     }
 
     fn pool_id(&self) -> usize {
@@ -150,7 +150,7 @@ impl<S: api::Strategy> Sock<S> {
         let TxBuf { ref slot, .. } = scan;
         let token = slot.buf_idx();
         let token = api::BufferIndex::from(token as usize);
-        let buf = unsafe { self.ctx.buffer(token) };
+        let buf = unsafe { Ctx::<S>::buffer(&self.ctx, token) };
         let buf = unsafe { &mut (*buf) };
         if packet.len() > buf.len() {
             bail!("Packet too big");
