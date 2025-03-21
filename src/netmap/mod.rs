@@ -2,14 +2,14 @@ use crate::api::{self, BufferConsumer, BufferProducer, Context, Payload};
 use anyhow::{Result, bail};
 use netmap_rs::context::{BufferPool, Port, Receiver, RxBuf, Transmitter, TxBuf};
 use nix::sys::time::TimeVal;
-use std::cell::RefCell;
+//use std::cell::RefCell;
 //use std::cell::RefCell;
 use crate::api::ContextExt;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-//type RefCell<T> = crate::fake_refcell::FakeRefCell<T>;
+type RefCell<T> = crate::fake_refcell::FakeRefCell<T>;
 #[derive(Clone)]
 pub struct Ctx<S: api::Strategy> {
     buffer_pool: Arc<BufferPool>,
@@ -174,13 +174,13 @@ impl<S: api::Strategy> Sock<S> {
 
         let packet_token = Tok::new(pkt_idx, self.ctx.index);
 
-        if let Some(filter) = self.filter.as_ref() {
-            let aliased_packet = self.ctx.peek_packet(&packet_token);
-            let aliased_packet = ManuallyDrop::new(aliased_packet);
-            if filter.apply(&ts, &*aliased_packet).is_err() {
-                bail!("Filter failed");
-            }
-        }
+        //if let Some(filter) = self.filter.as_ref() {
+        //    let aliased_packet = self.ctx.peek_packet(&packet_token);
+        //    let aliased_packet = ManuallyDrop::new(aliased_packet);
+        //    if filter.apply(&ts, &*aliased_packet).is_err() {
+        //        bail!("Filter failed");
+        //    }
+        //}
         Ok((ManuallyDrop::into_inner(packet_token), Meta {}))
     }
 }

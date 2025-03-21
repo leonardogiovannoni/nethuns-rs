@@ -6,6 +6,7 @@ mod forward_mt;
 mod meter;
 mod netmap;
 mod strategy;
+mod fake_refcell;
 use std::{io::BufRead, time::Duration};
 
 use anyhow::Result;
@@ -63,7 +64,7 @@ fn main2() -> Result<()> {
 
 
 
-fn main() -> Result<()> {
+fn main3() -> Result<()> {
     let mut socket0 = af_xdp::Sock::<MpscStrategy>::create(
         "veth0",
         Some(0),
@@ -91,4 +92,9 @@ fn main() -> Result<()> {
     let (packet, meta) = socket0.recv().unwrap();
     assert_eq!(&packet[..20], b"Helloworldmyfriend\0\0");
     Ok(())
+}
+
+
+fn main() {
+    meter::routine().unwrap();
 }

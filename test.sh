@@ -18,7 +18,7 @@ sudo ip link set veth0dpdk up && sudo ip link set veth1dpdk up
 sudo ip link set veth0dpdk promisc on
 sudo ip link set veth1dpdk promisc on
 
-sudo env LD_LIBRARY_PATH=/usr/local/lib64 "$CARGO" test
+sudo env LD_LIBRARY_PATH=/usr/local/lib/x86_64-linux-gnu "$CARGO" test
 
 
 sudo ip link del veth0af_xdp

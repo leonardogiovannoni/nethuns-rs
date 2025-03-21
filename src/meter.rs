@@ -11,7 +11,8 @@ use std::thread;
 use std::time::Duration;
 use strategy::{CrossbeamArgs, CrossbeamStrategy, MpscArgs, MpscStrategy, StdStrategy};
 
-use crate::{af_xdp, api, netmap, strategy};
+use crate::strategy::StdArgs;
+use crate::{af_xdp, api, dpdk, netmap, strategy};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -51,6 +52,7 @@ enum Framework {
     Netmap(NetmapArgs),
     /// Use AF_XDP framework.
     AfXdp(AfXdpArgs),
+    Dpdk(DpdkArgs),
 }
 
 /// Netmap-specific arguments.
@@ -65,6 +67,44 @@ struct NetmapArgs {
 
     #[clap(long, default_value_t = 256)]
     producer_buffer_size: usize,
+}
+
+/*        let mut socket0 = Sock::<MpscStrategy>::create(
+            "veth0dpdk",
+            Some(0),
+            None,
+            Flags::DpdkFlags(DpdkFlags {
+                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+                num_mbufs: 8192,
+                mbuf_cache_size: 250,
+                mbuf_default_buf_size: 2176,
+            }),
+        )
+        .unwrap(); */
+
+#[derive(Parser, Debug)]
+struct DpdkArgs {
+    /// Extra buffer size for netmap.
+    
+    // num_mbufs: 8192,
+    #[clap(long, default_value_t = 8192)]
+    num_mbufs: u32,
+
+    // mbuf_cache_size: 250,
+    #[clap(long, default_value_t = 250)]
+    mbuf_cache_size: u32,
+
+    // mbuf_default_buf_size: 2176,
+    #[clap(long, default_value_t = 2176)]
+    mbuf_default_buf_size: u32,
+
+    #[clap(long, default_value_t = 256)]
+    consumer_buffer_size: usize,
+
+    #[clap(long, default_value_t = 256)]
+    producer_buffer_size: usize,
+
+
 }
 
 /// AF_XDP-specific arguments.
@@ -260,7 +300,8 @@ pub(crate) fn routine() -> Result<()> {
         Framework::Netmap(netmap_args) => {
             let flags = Flags::Netmap(netmap::NetmapFlags {
                 extra_buf: netmap_args.extra_buf,
-                strategy_args: StrategyArgs::Mpsc(MpscArgs {
+                strategy_args: 
+                StrategyArgs::Mpsc(MpscArgs {
                     buffer_size: netmap_args.extra_buf as usize,
                     consumer_buffer_size: netmap_args.consumer_buffer_size,
                     producer_buffer_size: netmap_args.producer_buffer_size,
@@ -273,12 +314,25 @@ pub(crate) fn routine() -> Result<()> {
                 bind_flags: af_xdp_args.bind_flags,
                 xdp_flags: af_xdp_args.xdp_flags,
                 strategy_args: StrategyArgs::Mpsc(MpscArgs {
-                    buffer_size: 1024,
+                    buffer_size: 4096,
                     consumer_buffer_size: 256,
                     producer_buffer_size: 256,
                 }),
             });
             run::<af_xdp::Sock<MpscStrategy>, _>(flags, &args)?;
+        }
+        Framework::Dpdk(dpdk_args) => {
+            let flags = Flags::DpdkFlags(dpdk::DpdkFlags {
+                strategy_args: api::StrategyArgs::Mpsc(MpscArgs {
+                    buffer_size: dpdk_args.mbuf_default_buf_size as usize,
+                    consumer_buffer_size: dpdk_args.consumer_buffer_size,
+                    producer_buffer_size: dpdk_args.producer_buffer_size,
+                }),
+                num_mbufs: dpdk_args.num_mbufs,
+                mbuf_cache_size: dpdk_args.mbuf_cache_size,
+                mbuf_default_buf_size: dpdk_args.mbuf_default_buf_size as u16,
+            });
+            run::<dpdk::Sock<MpscStrategy>, _>(flags, &args)?;
         }
         _ => bail!("Unsupported framework"),
     }
