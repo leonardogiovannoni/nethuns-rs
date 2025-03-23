@@ -84,7 +84,6 @@ pub(crate) fn routine() -> Result<()> {
             let flags = Flags::Netmap(netmap::NetmapFlags {
                 extra_buf: netmap_args.extra_buf,
                 strategy_args: StrategyArgs::Mpsc(MpscArgs {
-                    buffer_size: netmap_args.extra_buf as usize,
                     consumer_buffer_size: netmap_args.consumer_buffer_size,
                     producer_buffer_size: netmap_args.producer_buffer_size,
                 }),
@@ -96,10 +95,11 @@ pub(crate) fn routine() -> Result<()> {
                 bind_flags: af_xdp_args.bind_flags,
                 xdp_flags: af_xdp_args.xdp_flags,
                 strategy_args: StrategyArgs::Mpsc(MpscArgs {
-                    buffer_size: 1024,
                     consumer_buffer_size: 256,
                     producer_buffer_size: 256,
                 }),
+                num_frames: 4096,
+                frame_size: 2048,
             });
             run_forwarder::<af_xdp::Sock<MpscStrategy>>(flags, &args, term)
         }

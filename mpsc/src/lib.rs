@@ -33,7 +33,6 @@ impl<T> Consumer<T> {
 
 pub struct Producer<T> {
     elem: spsc::Producer<T>,
-    // buffer: arrayvec::ArrayVec<T, BUFFER_LEN>,
     buffer: Vec<T>,
     list: ConsumerList<T>,
 }

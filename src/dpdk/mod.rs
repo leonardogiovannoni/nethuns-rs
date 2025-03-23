@@ -47,9 +47,9 @@ impl<S: api::Strategy> Ctx<S> {
 }
 
 impl<S: api::Strategy> Ctx<S> {
-    fn new(strategy_args: api::StrategyArgs) -> (Self, S::Consumer) {
+    fn new(nbufs: usize, strategy_args: api::StrategyArgs) -> (Self, S::Consumer) {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let (producer, cons) = S::create(strategy_args);
+        let (producer, cons) = S::create(nbufs, strategy_args);
         let res = Self {
             producer: RefCell::new(producer),
             index: COUNTER.fetch_add(1, Ordering::SeqCst),
@@ -230,7 +230,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             queue.unwrap_or(0) as u16, 
         )?;
 
-        let (ctx, consumer) = Ctx::new(flags.strategy_args);
+        let (ctx, consumer) = Ctx::new(flags.num_mbufs as usize, flags.strategy_args);
         Ok(Self {
             tx: RefCell::new(tx),
             rx: RefCell::new(rx),

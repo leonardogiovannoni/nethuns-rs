@@ -73,6 +73,8 @@ fn main3() -> Result<()> {
             xdp_flags: 0,
             bind_flags: 0,
             strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+            num_frames: 4096,
+            frame_size: 2048,
         }),
     )
     .unwrap();
@@ -84,6 +86,8 @@ fn main3() -> Result<()> {
             xdp_flags: 0,
             bind_flags: 0,
             strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+            num_frames: 4096,
+            frame_size: 2048,
         }),
     )
     .unwrap();

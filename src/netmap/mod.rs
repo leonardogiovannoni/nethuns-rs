@@ -24,7 +24,7 @@ impl<S: api::Strategy> Ctx<S> {
         strategy_args: api::StrategyArgs,
     ) -> (Self, S::Consumer) {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let (mut producer, cons) = S::create(strategy_args);
+        let (mut producer, cons) = S::create(indexes.len(), strategy_args);
         let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
         let buffer_pool = Arc::new(buffer_pool);
         for idx in indexes {

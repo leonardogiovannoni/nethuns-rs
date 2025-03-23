@@ -11,13 +11,13 @@ impl Strategy for MpscStrategy {
     type Producer = MpscProducer;
     type Consumer = MpscConsumer;
 
-    fn create(args: StrategyArgs) -> (Self::Producer, Self::Consumer) {
+    fn create(nbufs: usize, args: StrategyArgs) -> (Self::Producer, Self::Consumer) {
         let args = match args {
             StrategyArgs::Mpsc(args) => args,
             _ => panic!("Invalid argument type"),
         };
         let (producer, consumer) = mpsc::channel(
-            args.buffer_size,
+            nbufs,
             args.consumer_buffer_size,
             args.producer_buffer_size,
         );
@@ -30,7 +30,6 @@ impl Strategy for MpscStrategy {
 
 #[derive(Clone, Debug)]
 pub struct MpscArgs {
-    pub buffer_size: usize,
     pub consumer_buffer_size: usize,
     pub producer_buffer_size: usize,
 }
@@ -42,7 +41,6 @@ const DEFAULT_PRODUCER_BUFFER_SIZE: usize = 256;
 impl Default for MpscArgs {
     fn default() -> Self {
         Self {
-            buffer_size: DEFAULT_BUFFER_SIZE,
             consumer_buffer_size: DEFAULT_CONSUMER_BUFFER_SIZE,
             producer_buffer_size: DEFAULT_PRODUCER_BUFFER_SIZE,
         }
@@ -92,7 +90,7 @@ impl Strategy for StdStrategy {
     type Producer = StdProducer;
     type Consumer = StdConsumer;
 
-    fn create(args: StrategyArgs) -> (Self::Producer, Self::Consumer) {
+    fn create(nbufs: usize, args: StrategyArgs) -> (Self::Producer, Self::Consumer) {
         let args = match args {
             StrategyArgs::Std(args) => args,
             _ => panic!("Invalid argument type"),
@@ -161,7 +159,7 @@ impl Strategy for CrossbeamStrategy {
     type Producer = CrossbeamProducer;
     type Consumer = CrossbeamConsumer;
 
-    fn create(args: StrategyArgs) -> (Self::Producer, Self::Consumer) {
+    fn create(nbufs: usize, args: StrategyArgs) -> (Self::Producer, Self::Consumer) {
         let args = match args {
             StrategyArgs::Crossbeam(args) => args,
             _ => panic!("Invalid argument type"),

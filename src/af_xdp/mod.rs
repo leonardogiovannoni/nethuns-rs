@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use wrapper::{TxSlot, Umem, XdpDescData, XskSocket};
 
 // Constants from the C code
-const NUM_FRAMES: u32 = 4096;
-const FRAME_SIZE: u32 = XSK_UMEM__DEFAULT_FRAME_SIZE; // taken from libxdp binding
+//const NUM_FRAMES: u32 = 4096;
+//const FRAME_SIZE: u32 = XSK_UMEM__DEFAULT_FRAME_SIZE; // taken from libxdp binding
 const RX_BATCH_SIZE: u32 = 64;
 
 // Global variables (unsafe globals in Rust, used only during startup)
@@ -40,86 +40,11 @@ pub struct Ctx<S: api::Strategy> {
     producer: RefCell<S::Producer>,
     index: usize,
 }
-//
-//pub struct PacketData<'a, S: api::Strategy> {
-//    packet_idx: api::BufferIndex,
-//    size: usize,
-//    pool: &'a Ctx<S>,
-//}
-//
-//impl<'a, S: api::Strategy> api::Payload<'a> for PacketData<'a, S> {
-//    type Context = Ctx<S>;
-//    fn into_token(self) -> <Self::Context as api::Context>::Token {
-//        let me = ManuallyDrop::new(self);
-//        let rv = Tok::new(u32::from(me.packet_idx) as u64, me.pool.index, me.size as u32);
-//        ManuallyDrop::into_inner(rv)
-//    }
-//}
-//
-//impl<'a, S: api::Strategy> PacketData<'a, S> {
-//    fn as_slice(&self) -> &[u8] {
-//        let token = self.packet_idx;
-//        let buf = unsafe { self.pool.buffer(token, self.size) };
-//        unsafe { &(*buf) }
-//    }
-//
-//    fn as_mut_slice(&mut self) -> &mut [u8] {
-//        let token = self.packet_idx;
-//        let buf = unsafe { self.pool.buffer(token, self.size) };
-//        unsafe { &mut (*buf) }
-//    }
-//}
-//
-//impl<S: api::Strategy> AsRef<[u8]> for PacketData<'_, S> {
-//    fn as_ref(&self) -> &[u8] {
-//        self.as_slice()
-//    }
-//}
-//
-//impl<S: api::Strategy> AsMut<[u8]> for PacketData<'_, S> {
-//    fn as_mut(&mut self) -> &mut [u8] {
-//        self.as_mut_slice()
-//    }
-//}
-//
-//impl<S: api::Strategy> Deref for PacketData<'_, S> {
-//    type Target = [u8];
-//
-//    fn deref(&self) -> &Self::Target {
-//        self.as_slice()
-//    }
-//}
-//
-//impl<S: api::Strategy> DerefMut for PacketData<'_, S> {
-//    fn deref_mut(&mut self) -> &mut Self::Target {
-//        self.as_mut_slice()
-//    }
-//}
-//
-//impl<'a, S: api::Strategy> Drop for PacketData<'a, S> {
-//    fn drop(&mut self) {
-//        self.pool.release(self.packet_idx);
-//    }
-//}
-
-
-//fn pippo<S: api::Strategy>(buffer_pool: UmemArea, args: api::StrategyArgs) -> (Ctx<S>, S::Consumer) {
-//    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-//    let (producer, cons) = S::create(args);
-//    // mpsc::channel::<api::BufferIndex>(buffer_pool.size as usize);
-//    let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
-//    let res = Ctx {
-//        buffer: buffer_pool, //: Arc::new(buffer_pool),
-//        producer: RefCell::new(producer),
-//        index: counter,
-//    };
-//    (res, cons)
-//}
 
 impl<S: api::Strategy> Ctx<S> {
-    fn new(buffer_pool: UmemArea, args: api::StrategyArgs) -> (Self, S::Consumer) {
+    fn new(nbufs: usize, buffer_pool: UmemArea, args: api::StrategyArgs) -> (Self, S::Consumer) {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let (producer, cons) = S::create(args);
+        let (producer, cons) = S::create(nbufs, args);
         // mpsc::channel::<api::BufferIndex>(buffer_pool.size as usize);
         let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
         let res = Self {
@@ -521,13 +446,15 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         };
         let xdp_flags = flags.xdp_flags;
         let bind_flags = flags.bind_flags;
-        let umem_bytes_len = NUM_FRAMES * FRAME_SIZE;
+        let num_frames = flags.num_frames;
+        let frame_size = flags.frame_size;
+        let umem_bytes_len = (num_frames * frame_size) as usize;
         let umem = UmemArea::new(umem_bytes_len as usize)?;
-        let (ctx, consumer) = Ctx::new(umem.clone(), flags.strategy_args);
+        let (ctx, consumer) = Ctx::new(num_frames as usize, umem.clone(), flags.strategy_args);
 
-        for i in 0..NUM_FRAMES {
+        for i in 0..num_frames {
             let prod: &mut <S as api::Strategy>::Producer = &mut *ctx.producer.borrow_mut();
-            prod.push(api::BufferIndex::from((i as usize) * FRAME_SIZE as usize));
+            prod.push(api::BufferIndex::from((i as usize) * frame_size as usize));
         }
         {
             let prod: &mut <S as api::Strategy>::Producer = &mut *ctx.producer.borrow_mut();
@@ -569,6 +496,8 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
 pub struct AfXdpFlags {
     pub bind_flags: u16,
     pub xdp_flags: u32,
+    pub num_frames: u32,
+    pub frame_size: u32,
     pub strategy_args: api::StrategyArgs,
 }
 
@@ -635,6 +564,8 @@ mod tests {
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
+                frame_size: XSK_UMEM__DEFAULT_FRAME_SIZE,
+                num_frames: 4096,
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
             }),
         )
@@ -646,6 +577,8 @@ mod tests {
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
+                frame_size: XSK_UMEM__DEFAULT_FRAME_SIZE,
+                num_frames: 4096,
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
             }),
         )

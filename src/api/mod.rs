@@ -8,7 +8,7 @@ use crate::{
 pub trait Strategy: Send + Clone + 'static {
     type Producer: BufferProducer;
     type Consumer: BufferConsumer;
-    fn create(args: StrategyArgs) -> (Self::Producer, Self::Consumer);
+    fn create(nbuf: usize, args: StrategyArgs) -> (Self::Producer, Self::Consumer);
 }
 
 pub(crate) trait BufferProducer: Clone + Send {
