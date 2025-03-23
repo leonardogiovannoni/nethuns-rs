@@ -12,6 +12,7 @@ use std::ops::{Deref, DerefMut};
 use std::os::raw::c_int;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use api::ContextExt;
 use wrapper::{TxSlot, Umem, XdpDescData, XskSocket};
 
 // Constants from the C code
@@ -40,6 +41,8 @@ pub struct Ctx<S: api::Strategy> {
     producer: RefCell<S::Producer>,
     index: usize,
 }
+
+impl<S: api::Strategy> ContextExt for Ctx<S> {}
 
 impl<S: api::Strategy> Ctx<S> {
     fn new(nbufs: usize, buffer_pool: UmemArea, args: api::StrategyArgs) -> (Self, S::Consumer) {
@@ -236,7 +239,6 @@ impl<S: api::Strategy> api::TokenExt for Tok<S> {
     }
 }
 
-
 impl<S: api::Strategy> Tok<S> {
     fn new(idx: u64, buffer_pool: usize, len: u32) -> ManuallyDrop<Self> {
         let idx: usize = idx.try_into().unwrap();
@@ -248,7 +250,6 @@ impl<S: api::Strategy> Tok<S> {
             _marker: std::marker::PhantomData,
         })
     }
-
 }
 
 struct Port {
@@ -293,7 +294,11 @@ pub struct Sock<S: api::Strategy> {
 
 impl<S: api::Strategy> Sock<S> {
     #[inline(always)]
-    fn recv_inner(&self, slot: XdpDescData) -> Result<(Tok<S>, Meta)> {
+    fn recv_inner(
+        &self,
+        slot: XdpDescData,
+        filter: impl Fn(&Meta, &'_ [u8]) -> bool,
+    ) -> Result<(Tok<S>, Meta)> {
         let offset = slot.offset;
         let len = slot.len;
         let options = slot.options;
@@ -304,6 +309,14 @@ impl<S: api::Strategy> Sock<S> {
 
         let buffer_pool = self.ctx.index;
         let token = Tok::new(offset, buffer_pool, len);
+
+
+        let meta = Meta {};
+        let aliased_packet = self.ctx.peek_packet(&token);
+        let aliased_packet = ManuallyDrop::new(aliased_packet);
+        if !filter(&meta, &*aliased_packet) {
+            bail!("Filter failed");
+        }
         Ok((ManuallyDrop::into_inner(token), Meta {}))
     }
 
@@ -388,17 +401,20 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     type Context = Ctx<S>;
     type Metadata = Meta;
 
-    fn recv_token(&mut self) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
+    fn recv_token_with_filter(
+        &mut self,
+        filter: impl Fn(&Self::Metadata, &'_ [u8]) -> bool,
+    ) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
         let mut rx = self.xsk.borrow_mut();
         if let Some(slot) = rx.rx_mut().next() {
-            self.recv_inner(slot)
+            self.recv_inner(slot, filter)
         } else {
             self.umem_manager.borrow_mut().refill_fill_ring()?;
             let tmp = rx
                 .rx_mut()
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("No packets"))?;
-            self.recv_inner(tmp)
+            self.recv_inner(tmp, filter)
         }
     }
 
@@ -437,7 +453,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     fn create(
         portspec: &str,
         queue: Option<usize>,
-        filter: Option<()>,
+  //      filter: Option<()>,
         flags: api::Flags,
     ) -> anyhow::Result<Self> {
         let flags = match flags {
@@ -463,7 +479,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         let mut umem_manager = UmemManager::create_with_buffer(umem.clone(), consumer)?;
 
         // let port = Port::parse(portspec)?;
-       
+
         let socket = unsafe {
             XskSocket::create(
                 &umem_manager.umem,
@@ -475,16 +491,14 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         };
 
         umem_manager.refill_fill_ring()?;
-        Ok(
-            Self {
-                ctx,
-                xsk: RefCell::new(socket),
-                outstanding_tx: 0,
-                umem_manager: RefCell::new(umem_manager),
-                stats: Cell::new(StatsRecord::default()),
-                prev_stats: Cell::new(StatsRecord::default()),
-            },
-        )
+        Ok(Self {
+            ctx,
+            xsk: RefCell::new(socket),
+            outstanding_tx: 0,
+            umem_manager: RefCell::new(umem_manager),
+            stats: Cell::new(StatsRecord::default()),
+            prev_stats: Cell::new(StatsRecord::default()),
+        })
     }
 
     fn context(&self) -> &Self::Context {
@@ -560,7 +574,7 @@ mod tests {
         let mut socket0 = Sock::<MpscStrategy>::create(
             "veth0af_xdp",
             Some(0),
-            None,
+       //     None,
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
@@ -573,7 +587,7 @@ mod tests {
         let mut socket1 = Sock::<MpscStrategy>::create(
             "veth1af_xdp",
             Some(0),
-            None,
+     //       None,
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,

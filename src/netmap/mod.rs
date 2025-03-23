@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 type RefCell<T> = crate::fake_refcell::FakeRefCell<T>;
+
 #[derive(Clone)]
 pub struct Ctx<S: api::Strategy> {
     buffer_pool: Arc<BufferPool>,
@@ -121,7 +122,6 @@ pub struct Sock<S: api::Strategy> {
     rx: RefCell<Receiver>,
     ctx: Ctx<S>,
     consumer: RefCell<S::Consumer>,
-    filter: Option<Filter>,
 }
 
 impl<S: api::Strategy> std::fmt::Debug for Sock<S> {
@@ -130,19 +130,6 @@ impl<S: api::Strategy> std::fmt::Debug for Sock<S> {
     }
 }
 
-pub enum Filter {
-    Closure(Box<dyn Fn(&TimeVal, &[u8]) -> Result<(), ()> + Send>),
-    Function(fn(&TimeVal, &[u8]) -> Result<(), ()>),
-}
-
-impl Filter {
-    fn apply(&self, ts: &TimeVal, payload: &[u8]) -> Result<(), ()> {
-        match self {
-            Filter::Closure(f) => f(ts, payload),
-            Filter::Function(f) => f(ts, payload),
-        }
-    }
-}
 
 impl<S: api::Strategy> Sock<S> {
     #[inline(always)]
@@ -160,7 +147,8 @@ impl<S: api::Strategy> Sock<S> {
     }
 
     #[inline(always)]
-    fn recv_inner(&self, buf: RxBuf<'_>) -> Result<(Tok<S>, Meta)> {
+    fn recv_inner(&self, buf: RxBuf<'_>, filter: impl Fn(&Meta, &'_ [u8]) -> bool
+) -> Result<(Tok<S>, Meta)> {
         let RxBuf { slot, ts, .. } = buf;
         let free_idx = self
             .consumer
@@ -172,16 +160,16 @@ impl<S: api::Strategy> Sock<S> {
             slot.update_buffer(|x| *x = usize::from(free_idx) as u32);
         }
 
+        let meta = Meta {};
+
         let packet_token = Tok::new(pkt_idx, self.ctx.index);
 
-        //if let Some(filter) = self.filter.as_ref() {
-        //    let aliased_packet = self.ctx.peek_packet(&packet_token);
-        //    let aliased_packet = ManuallyDrop::new(aliased_packet);
-        //    if filter.apply(&ts, &*aliased_packet).is_err() {
-        //        bail!("Filter failed");
-        //    }
-        //}
-        Ok((ManuallyDrop::into_inner(packet_token), Meta {}))
+        let aliased_packet = self.ctx.peek_packet(&packet_token);
+        let aliased_packet = ManuallyDrop::new(aliased_packet);
+        if !filter(&meta, &*aliased_packet) {
+            bail!("Filter failed");
+        }
+        Ok((ManuallyDrop::into_inner(packet_token), meta))
     }
 }
 
@@ -189,10 +177,13 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     type Context = Ctx<S>;
     type Metadata = Meta;
 
-    fn recv_token(&mut self) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
+    fn recv_token_with_filter(
+            &mut self,
+            filter: impl Fn(&Self::Metadata, &'_ [u8]) -> bool,
+        ) -> anyhow::Result<(<Self::Context as Context>::Token, Self::Metadata)> {
         let mut rx = self.rx.borrow_mut();
         if let Some(tmp) = rx.iter_mut().next() {
-            self.recv_inner(tmp)
+            self.recv_inner(tmp, filter)
         } else {
             // SAFETY: there are no `RxBuf`s, and so any `Slot`s, in use
             unsafe {
@@ -202,7 +193,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
                 .iter_mut()
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("No packets"))?;
-            self.recv_inner(tmp)
+            self.recv_inner(tmp, filter)
         }
     }
 
@@ -231,7 +222,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         }
     }
 
-    fn create(portspec: &str, queue: Option<usize>, filter: Option<()>, flags: api::Flags) -> anyhow::Result<Self> {
+    fn create(portspec: &str, queue: Option<usize>, flags: api::Flags) -> anyhow::Result<Self> {
         let flags = match flags {
             api::Flags::Netmap(flags) => flags,
             _ => panic!("Invalid flags"),
@@ -252,7 +243,6 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             rx: RefCell::new(rx),
             ctx,
             consumer: RefCell::new(consumer),
-            filter: None, // TODO
         })
     }
 
@@ -285,7 +275,7 @@ mod tests {
         let mut socket0 = Sock::<MpscStrategy>::create(
             "vale0",
             Some(0),
-            None,
+          //  None,
             Flags::Netmap(NetmapFlags {
                 extra_buf: 1024,
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
@@ -295,7 +285,7 @@ mod tests {
         let mut socket1 = Sock::<MpscStrategy>::create(
             "vale0",
             Some(1),
-            None,
+       //     None,
             Flags::Netmap(NetmapFlags {
                 extra_buf: 1024,
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),

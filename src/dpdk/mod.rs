@@ -1,5 +1,6 @@
 mod wrapper;
 use anyhow::{Result, bail};
+use api::ContextExt;
 use dpdk_sys::*;
 use etherparse::err::packet;
 use std::cell::RefCell;
@@ -34,6 +35,8 @@ pub struct Ctx<S: api::Strategy> {
     producer: RefCell<S::Producer>,
     index: usize,
 }
+
+impl<S: api::Strategy> ContextExt for Ctx<S> {}
 
 impl<S: api::Strategy> Ctx<S> {
     unsafe fn buffer(&self, idx: api::BufferIndex) -> *mut [u8] {
@@ -123,7 +126,7 @@ pub struct Sock<S: api::Strategy> {
     rx: RefCell<Receiver>,
     ctx: Ctx<S>,
     consumer: RefCell<S::Consumer>,
-    filter: Option<Filter>,
+    //filter: Option<Filter>,
 }
 
 pub struct Meta {}
@@ -150,11 +153,21 @@ impl<S: api::Strategy> Sock<S> {
         }
     }
 
-    fn recv_inner(&self, buf: RteMBuf) -> Result<(Tok<S>, Meta)> {
+    fn recv_inner(
+        &self,
+        buf: RteMBuf,
+        filter: impl Fn(&Meta, &'_ [u8]) -> bool,
+    ) -> Result<(Tok<S>, Meta)> {
         let token = buf.as_ptr() as usize;
         let token = api::BufferIndex::from(token);
         let token = Tok::new(token, api::Context::pool_id(&self.ctx));
 
+        let meta = Meta {};
+        let aliased_packet = self.ctx.peek_packet(&token);
+        let aliased_packet = ManuallyDrop::new(aliased_packet);
+        if !filter(&meta, &*aliased_packet) {
+            bail!("Filter failed");
+        }
         // TODO: filter stuff..
 
         Ok((ManuallyDrop::into_inner(token), Meta {}))
@@ -182,11 +195,12 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     type Context = Ctx<S>;
     type Metadata = Meta;
 
-    fn recv_token(
+    fn recv_token_with_filter(
         &mut self,
+        filter: impl Fn(&Self::Metadata, &'_ [u8]) -> bool,
     ) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
         if let Some(tmp) = self.rx.borrow_mut().iter_mut().next() {
-            self.recv_inner(tmp)
+            self.recv_inner(tmp, filter)
         } else {
             self.flush_to_memory_pool();
             let mut rx = self.rx.borrow_mut();
@@ -194,7 +208,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
                 .iter_mut()
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("No packets"))?;
-            self.recv_inner(tmp)
+            self.recv_inner(tmp, filter)
         }
     }
 
@@ -216,7 +230,12 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         self.tx.borrow_mut().flush();
     }
 
-    fn create(portspec: &str, queue: Option<usize>, filter: Option<()>, flags: api::Flags) -> anyhow::Result<Self> {
+    fn create(
+        portspec: &str,
+        queue: Option<usize>,
+   //     filter: Option<()>,
+        flags: api::Flags,
+    ) -> anyhow::Result<Self> {
         let flags = match flags {
             api::Flags::DpdkFlags(flags) => flags,
             _ => panic!("Invalid flags"),
@@ -227,7 +246,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             flags.num_mbufs,
             flags.mbuf_cache_size,
             flags.mbuf_default_buf_size,
-            queue.unwrap_or(0) as u16, 
+            queue.unwrap_or(0) as u16,
         )?;
 
         let (ctx, consumer) = Ctx::new(flags.num_mbufs as usize, flags.strategy_args);
@@ -236,7 +255,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             rx: RefCell::new(rx),
             ctx,
             consumer: RefCell::new(consumer),
-            filter,
+          //  filter,
         })
     }
 
@@ -266,7 +285,7 @@ mod tests {
         let mut socket0 = Sock::<MpscStrategy>::create(
             "veth0dpdk",
             Some(0),
-            None,
+        //    None,
             Flags::DpdkFlags(DpdkFlags {
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
                 num_mbufs: 8192,
@@ -278,7 +297,7 @@ mod tests {
         let mut socket1 = Sock::<MpscStrategy>::create(
             "veth1dpdk",
             Some(0),
-            None,
+      //      None,
             Flags::DpdkFlags(DpdkFlags {
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
                 num_mbufs: 8192,

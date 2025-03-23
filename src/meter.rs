@@ -21,7 +21,6 @@ struct Args {
     #[clap(short, long)]
     interface: String,
 
-
     #[clap(long)]
     queue: Option<usize>,
     
@@ -181,7 +180,7 @@ fn run<Sock: Socket<S> + 'static, S: Strategy>(
         } else {
             args.interface.clone()
         };
-        let socket = Sock::create(&portspec, args.queue, None, flags.clone())?;
+        let socket = Sock::create(&portspec, args.queue, flags.clone())?;
         sockets.push(socket);
     }
 

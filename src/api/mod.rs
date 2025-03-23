@@ -171,9 +171,27 @@ pub trait Socket<S: Strategy>: Send + Sized {
         Ok((token.consume(self.context()), meta))
     }
 
+    fn recv_with_filter(
+        &mut self,
+        filter: impl Fn(&Self::Metadata, &'_ [u8]) -> bool,
+    ) -> anyhow::Result<(
+        Payload<'_, Self::Context>,
+        Self::Metadata,
+    )> {
+        let (token, meta) = self.recv_token_with_filter(filter)?;
+        Ok((token.consume(self.context()), meta))
+    }
+
     /// Receives a packet and returns a token.
     fn recv_token(
         &mut self,
+    ) -> anyhow::Result<(<Self::Context as Context>::Token, Self::Metadata)> {
+        self.recv_token_with_filter(|_, _| true)
+    }
+
+    fn recv_token_with_filter(
+        &mut self,
+        filter: impl Fn(&Self::Metadata, &'_ [u8]) -> bool,
     ) -> anyhow::Result<(<Self::Context as Context>::Token, Self::Metadata)>;
 
     /// Sends a packet. The packet is provided as a slice.
@@ -189,7 +207,7 @@ pub trait Socket<S: Strategy>: Send + Sized {
     fn create(
         portspec: &str,
         queue: Option<usize>,
-        filter: Option<()>,
+       // filter: Option<()>,
         flags: Flags,
     ) -> anyhow::Result<Self>;
 

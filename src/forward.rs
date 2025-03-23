@@ -120,8 +120,8 @@ where
     println!("  Output interface: {}", args.out_if);
 
     // Create the input and output sockets using the selected framework.
-    let mut in_socket = Sock::create(&args.in_if, args.queue, None, flags.clone())?;
-    let mut out_socket = Sock::create(&args.out_if, args.queue, None, flags.clone())?;
+    let mut in_socket = Sock::create(&args.in_if, args.queue, flags.clone())?;
+    let mut out_socket = Sock::create(&args.out_if, args.queue, flags.clone())?;
 
     // Atomic counters for received and forwarded packets.
     let total_rcv = Arc::new(AtomicU64::new(0));

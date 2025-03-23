@@ -117,8 +117,8 @@ where
     let out_if = args.out_if.clone();
     let flags_consumer = flags.clone();
 
-    let mut in_socket = Sock::create(&args.in_if, args.queue, None, flags.clone())?;
-    let mut out_socket = Sock::create(&out_if, args.queue, None, flags_consumer)?;
+    let mut in_socket = Sock::create(&args.in_if, args.queue, flags.clone())?;
+    let mut out_socket = Sock::create(&out_if, args.queue, flags_consumer)?;
     {
         let in_ctx = in_socket.context().clone();
         thread::spawn(move || -> Result<()> {
