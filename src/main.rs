@@ -1,31 +1,18 @@
 mod af_xdp;
 mod api;
 mod dpdk;
+mod fake_refcell;
 mod forward;
 mod forward_mt;
 mod meter;
 mod netmap;
 mod strategy;
-mod fake_refcell;
 use std::{io::BufRead, time::Duration};
 
 use anyhow::Result;
 use api::{Flags, Socket};
 use dpdk::DpdkFlags;
-use strategy::{MpscArgs, MpscStrategy}; /*let dpdk_flags = dpdk::DpdkFlags {
-strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
-};
-let flags = api::Flags::DpdkFlags(dpdk_flags);
-let mut sock = dpdk::Sock::<MpscStrategy>::create("veth0", None, flags)?;
-
-loop {
-let Ok((pkt, _)) = sock.recv() else {
-continue;
-};
-println!("Received packet: {:?}", &*pkt);
-std::thread::sleep(Duration::from_secs(1));
-}
-Ok(())*/
+use strategy::{MpscArgs, MpscStrategy}; 
 
 fn main2() -> Result<()> {
     let mut socket0 = dpdk::Sock::<MpscStrategy>::create(
@@ -36,7 +23,6 @@ fn main2() -> Result<()> {
             num_mbufs: 8192,
             mbuf_cache_size: 250,
             mbuf_default_buf_size: 2176,
-            
         }),
     )
     .unwrap();
@@ -59,8 +45,6 @@ fn main2() -> Result<()> {
     println!("Received packet: {:?}", &*payload);
     Ok(())
 }
-
-
 
 fn main3() -> Result<()> {
     let mut socket0 = af_xdp::Sock::<MpscStrategy>::create(
@@ -93,7 +77,6 @@ fn main3() -> Result<()> {
     assert_eq!(&packet[..20], b"Helloworldmyfriend\0\0");
     Ok(())
 }
-
 
 fn main() {
     meter::routine().unwrap();

@@ -1,6 +1,6 @@
 mod wrapper;
 use anyhow::{Result, bail};
-use api::ContextExt;
+//use api::ContextExt;
 use dpdk_sys::*;
 use etherparse::err::packet;
 use std::cell::RefCell;
@@ -36,7 +36,7 @@ pub struct Ctx<S: api::Strategy> {
     index: usize,
 }
 
-impl<S: api::Strategy> ContextExt for Ctx<S> {}
+//impl<S: api::Strategy> ContextExt for Ctx<S> {}
 
 impl<S: api::Strategy> Ctx<S> {
     unsafe fn buffer(&self, idx: api::BufferIndex) -> *mut [u8] {
@@ -95,15 +95,15 @@ impl<S: api::Strategy> api::Token for Tok<S> {
     }
 }
 
-impl<S: api::Strategy> api::TokenExt for Tok<S> {
-    fn duplicate(&self) -> Self {
-        Self {
-            idx: self.idx,
-            pool_id: self.pool_id,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
+//impl<S: api::Strategy> api::TokenExt for Tok<S> {
+//    fn duplicate(&self) -> Self {
+//        Self {
+//            idx: self.idx,
+//            pool_id: self.pool_id,
+//            _phantom: std::marker::PhantomData,
+//        }
+//    }
+//}
 
 impl<S: api::Strategy> api::Context for Ctx<S> {
     type Token = Tok<S>;
@@ -126,7 +126,6 @@ pub struct Sock<S: api::Strategy> {
     rx: RefCell<Receiver>,
     ctx: Ctx<S>,
     consumer: RefCell<S::Consumer>,
-    //filter: Option<Filter>,
 }
 
 pub struct Meta {}
@@ -139,7 +138,6 @@ impl<S: api::Strategy> Sock<S> {
         loop {
             let mut b = false;
             while let Some(val) = consumer.pop() {
-                // self.ctx.free(val);
                 let ptr = usize::from(val) as *mut rte_mbuf;
 
                 unsafe { rust_rte_pktmbuf_free(ptr) };
@@ -153,23 +151,11 @@ impl<S: api::Strategy> Sock<S> {
         }
     }
 
-    fn recv_inner(
-        &self,
-        buf: RteMBuf,
-        filter: impl Fn(&Meta, &'_ [u8]) -> bool,
-    ) -> Result<(Tok<S>, Meta)> {
+    fn recv_inner(&self, buf: RteMBuf) -> Result<(Tok<S>, Meta)> {
         let token = buf.as_ptr() as usize;
         let token = api::BufferIndex::from(token);
         let token = Tok::new(token, api::Context::pool_id(&self.ctx));
-
         let meta = Meta {};
-        let aliased_packet = self.ctx.peek_packet(&token);
-        let aliased_packet = ManuallyDrop::new(aliased_packet);
-        if !filter(&meta, &*aliased_packet) {
-            bail!("Filter failed");
-        }
-        // TODO: filter stuff..
-
         Ok((ManuallyDrop::into_inner(token), Meta {}))
     }
 
@@ -195,12 +181,11 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     type Context = Ctx<S>;
     type Metadata = Meta;
 
-    fn recv_token_with_filter(
+    fn recv_token(
         &mut self,
-        filter: impl Fn(&Self::Metadata, &'_ [u8]) -> bool,
     ) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
         if let Some(tmp) = self.rx.borrow_mut().iter_mut().next() {
-            self.recv_inner(tmp, filter)
+            self.recv_inner(tmp)
         } else {
             self.flush_to_memory_pool();
             let mut rx = self.rx.borrow_mut();
@@ -208,7 +193,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
                 .iter_mut()
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("No packets"))?;
-            self.recv_inner(tmp, filter)
+            self.recv_inner(tmp)
         }
     }
 
@@ -230,12 +215,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         self.tx.borrow_mut().flush();
     }
 
-    fn create(
-        portspec: &str,
-        queue: Option<usize>,
-   //     filter: Option<()>,
-        flags: api::Flags,
-    ) -> anyhow::Result<Self> {
+    fn create(portspec: &str, queue: Option<usize>, flags: api::Flags) -> anyhow::Result<Self> {
         let flags = match flags {
             api::Flags::DpdkFlags(flags) => flags,
             _ => panic!("Invalid flags"),
@@ -255,7 +235,6 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             rx: RefCell::new(rx),
             ctx,
             consumer: RefCell::new(consumer),
-          //  filter,
         })
     }
 
@@ -285,7 +264,6 @@ mod tests {
         let mut socket0 = Sock::<MpscStrategy>::create(
             "veth0dpdk",
             Some(0),
-        //    None,
             Flags::DpdkFlags(DpdkFlags {
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
                 num_mbufs: 8192,
@@ -297,7 +275,6 @@ mod tests {
         let mut socket1 = Sock::<MpscStrategy>::create(
             "veth1dpdk",
             Some(0),
-      //      None,
             Flags::DpdkFlags(DpdkFlags {
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
                 num_mbufs: 8192,

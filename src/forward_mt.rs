@@ -18,13 +18,10 @@ use crate::{
     strategy::{MpscArgs, MpscStrategy},
 };
 
-use ringbuf::HeapCons;
 use ringbuf::{
-    HeapProd,
     traits::{Consumer, Producer, Split},
 };
 // Use Crossbeam's ArrayQueue for the SPSC queue (add crossbeam-queue to Cargo.toml).
-use crossbeam_queue::ArrayQueue;
 
 /// Command-line arguments.
 #[derive(Parser, Debug)]

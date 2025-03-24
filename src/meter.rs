@@ -1,7 +1,6 @@
-
 //mod fake_refcell;
 use anyhow::{Result, bail};
-use api::{Flags, Socket, Token, Strategy, StrategyArgs};
+use api::{Flags, Socket, Strategy, StrategyArgs, Token};
 use clap::{Parser, Subcommand};
 use etherparse::{NetHeaders, PacketHeaders};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -23,7 +22,7 @@ struct Args {
 
     #[clap(long)]
     queue: Option<usize>,
-    
+
     /// Number of sockets to use (default 1).
     #[clap(short, long, default_value_t = 1)]
     sockets: usize,
@@ -69,22 +68,22 @@ struct NetmapArgs {
 }
 
 /*        let mut socket0 = Sock::<MpscStrategy>::create(
-            "veth0dpdk",
-            Some(0),
-            None,
-            Flags::DpdkFlags(DpdkFlags {
-                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
-                num_mbufs: 8192,
-                mbuf_cache_size: 250,
-                mbuf_default_buf_size: 2176,
-            }),
-        )
-        .unwrap(); */
+    "veth0dpdk",
+    Some(0),
+    None,
+    Flags::DpdkFlags(DpdkFlags {
+        strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+        num_mbufs: 8192,
+        mbuf_cache_size: 250,
+        mbuf_default_buf_size: 2176,
+    }),
+)
+.unwrap(); */
 
 #[derive(Parser, Debug)]
 struct DpdkArgs {
     /// Extra buffer size for netmap.
-    
+
     // num_mbufs: 8192,
     #[clap(long, default_value_t = 8192)]
     num_mbufs: u32,
@@ -102,8 +101,6 @@ struct DpdkArgs {
 
     #[clap(long, default_value_t = 256)]
     producer_buffer_size: usize,
-
-
 }
 
 /// AF_XDP-specific arguments.
@@ -138,10 +135,7 @@ fn print_addrs(frame: &[u8]) -> Result<String> {
     }
 }
 
-fn run<Sock: Socket<S> + 'static, S: Strategy>(
-    flags: Flags,
-    args: &Args,
-) -> Result<()> {
+fn run<Sock: Socket<S> + 'static, S: Strategy>(flags: Flags, args: &Args) -> Result<()> {
     println!("Test {} started with parameters:", args.interface);
     println!("* interface: {}", args.interface);
     println!("* sockets: {}", args.sockets);
@@ -291,16 +285,13 @@ fn run<Sock: Socket<S> + 'static, S: Strategy>(
     Ok(())
 }
 
-
-
 pub(crate) fn routine() -> Result<()> {
     let args = Args::parse();
     match &args.framework {
         Framework::Netmap(netmap_args) => {
             let flags = Flags::Netmap(netmap::NetmapFlags {
                 extra_buf: netmap_args.extra_buf,
-                strategy_args: 
-                StrategyArgs::Mpsc(MpscArgs {
+                strategy_args: StrategyArgs::Mpsc(MpscArgs {
                     consumer_buffer_size: netmap_args.consumer_buffer_size,
                     producer_buffer_size: netmap_args.producer_buffer_size,
                 }),

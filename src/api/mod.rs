@@ -1,9 +1,14 @@
-use std::{mem::ManuallyDrop, ops::{Deref, DerefMut}};
-
-use crate::{
-    af_xdp::AfXdpFlags, dpdk::DpdkFlags, netmap::NetmapFlags, strategy::{CrossbeamArgs, MpscArgs, StdArgs}
+use std::{
+    mem::ManuallyDrop,
+    ops::{Deref, DerefMut},
 };
 
+use crate::{
+    af_xdp::AfXdpFlags,
+    dpdk::DpdkFlags,
+    netmap::NetmapFlags,
+    strategy::{CrossbeamArgs, MpscArgs, StdArgs},
+};
 
 pub trait Strategy: Send + Clone + 'static {
     type Producer: BufferProducer;
@@ -25,7 +30,6 @@ pub(crate) trait BufferConsumer: Send {
 #[derive(Clone, Copy, Debug)]
 pub struct BufferIndex(usize);
 
-
 impl From<usize> for BufferIndex {
     fn from(val: usize) -> Self {
         Self(val.into())
@@ -38,12 +42,10 @@ impl From<BufferIndex> for usize {
     }
 }
 
-
 pub struct Payload<'ctx, Ctx: Context> {
     token: ManuallyDrop<Ctx::Token>,
     ctx: &'ctx Ctx,
 }
-
 
 impl<'ctx, Ctx: Context> Payload<'ctx, Ctx> {
     pub fn new(token: Ctx::Token, ctx: &'ctx Ctx) -> Self {
@@ -59,16 +61,19 @@ impl<'ctx, Ctx: Context> Deref for Payload<'ctx, Ctx> {
 
     fn deref(&self) -> &Self::Target {
         unsafe {
-            &*self.ctx.unsafe_buffer(self.token.buffer_idx(), self.token.size())
+            &*self
+                .ctx
+                .unsafe_buffer(self.token.buffer_idx(), self.token.size())
         }
     }
 }
 
-
 impl<'ctx, Ctx: Context> DerefMut for Payload<'ctx, Ctx> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
-            &mut *self.ctx.unsafe_buffer(self.token.buffer_idx(), self.token.size())
+            &mut *self
+                .ctx
+                .unsafe_buffer(self.token.buffer_idx(), self.token.size())
         }
     }
 }
@@ -78,7 +83,6 @@ impl<'ctx, Ctx: Context> Drop for Payload<'ctx, Ctx> {
         self.ctx.release(self.token.buffer_idx());
     }
 }
-
 
 impl<'ctx, Ctx: Context> Payload<'ctx, Ctx> {
     pub fn into_token(self) -> Ctx::Token {
@@ -95,10 +99,7 @@ pub trait Token: Sized + Send {
     /// Which context type produced this token?
     type Context: Context<Token = Self>;
 
-    fn consume<'ctx>(
-        self,
-        ctx: &'ctx Self::Context,
-    ) -> Payload<'ctx, Self::Context> {
+    fn consume<'ctx>(self, ctx: &'ctx Self::Context) -> Payload<'ctx, Self::Context> {
         ctx.packet(self)
     }
 
@@ -109,16 +110,16 @@ pub trait Token: Sized + Send {
     fn pool_id(&self) -> usize;
 }
 
-pub(crate) trait TokenExt {
-    fn duplicate(&self) -> Self;
-}
+//pub(crate) trait TokenExt {
+//    fn duplicate(&self) -> Self;
+//}
 
 /// A trait representing the buffer pool (or context) that is used by the
 /// underlying implementation. It allows obtaining a mutable slice given
 /// a buffer index and “releasing” the buffer back to the pool.
 pub trait Context: Sized + Clone + Send {
     /// The type of token this context uses.
-    type Token: Token<Context = Self> + TokenExt;
+    type Token: Token<Context = Self>; // + TokenExt;
 
     fn check_token(&self, token: &Self::Token) -> bool {
         token.pool_id() == self.pool_id()
@@ -132,7 +133,6 @@ pub trait Context: Sized + Clone + Send {
         Payload::new(token, self)
     }
 
-
     fn pool_id(&self) -> usize;
 
     unsafe fn unsafe_buffer(&self, buf_idx: BufferIndex, size: usize) -> *mut [u8];
@@ -140,59 +140,30 @@ pub trait Context: Sized + Clone + Send {
     fn release(&self, buf_idx: BufferIndex);
 }
 
-pub(crate) trait ContextExt: Context {
-    fn peek_packet(&self, token: &Self::Token) -> Payload<'_, Self> {
-        if !self.check_token(token) {
-            panic!("Invalid token");
-        }
-        let token = TokenExt::duplicate(token);
-        Payload::new(token, self)
-    }
-}
+// pub(crate) trait ContextExt: Context {
+//     fn peek_packet(&self, token: &Self::Token) -> Payload<'_, Self> {
+//         if !self.check_token(token) {
+//             panic!("Invalid token");
+//         }
+//         let token = TokenExt::duplicate(token);
+//         Payload::new(token, self)
+//     }
+// }
 
-/*pub trait Socket<S, F>
-where
-    S: Strategy,
-    F: FnOnce(Self::Metadata, Payload<'_, Self::Context>) -> bool + Send,
-{ */
 /// The common API for a network socket, which can send, receive, and flush.
 pub trait Socket<S: Strategy>: Send + Sized {
     /// The associated context.
     type Context: Context;
     type Metadata: Metadata;
 
-    fn recv(
-        &mut self,
-    ) -> anyhow::Result<(
-        Payload<'_, Self::Context>,
-        Self::Metadata,
-    )> {
+    fn recv(&mut self) -> anyhow::Result<(Payload<'_, Self::Context>, Self::Metadata)> {
         let (token, meta) = self.recv_token()?;
         Ok((token.consume(self.context()), meta))
     }
 
-    fn recv_with_filter(
-        &mut self,
-        filter: impl Fn(&Self::Metadata, &'_ [u8]) -> bool,
-    ) -> anyhow::Result<(
-        Payload<'_, Self::Context>,
-        Self::Metadata,
-    )> {
-        let (token, meta) = self.recv_token_with_filter(filter)?;
-        Ok((token.consume(self.context()), meta))
-    }
-
     /// Receives a packet and returns a token.
-    fn recv_token(
-        &mut self,
-    ) -> anyhow::Result<(<Self::Context as Context>::Token, Self::Metadata)> {
-        self.recv_token_with_filter(|_, _| true)
-    }
-
-    fn recv_token_with_filter(
-        &mut self,
-        filter: impl Fn(&Self::Metadata, &'_ [u8]) -> bool,
-    ) -> anyhow::Result<(<Self::Context as Context>::Token, Self::Metadata)>;
+    fn recv_token(&mut self)
+    -> anyhow::Result<(<Self::Context as Context>::Token, Self::Metadata)>;
 
     /// Sends a packet. The packet is provided as a slice.
     fn send(&mut self, packet: &[u8]) -> anyhow::Result<()>;
@@ -207,7 +178,7 @@ pub trait Socket<S: Strategy>: Send + Sized {
     fn create(
         portspec: &str,
         queue: Option<usize>,
-       // filter: Option<()>,
+        // filter: Option<()>,
         flags: Flags,
     ) -> anyhow::Result<Self>;
 
@@ -227,5 +198,5 @@ pub enum StrategyArgs {
 pub enum Flags {
     Netmap(NetmapFlags),
     AfXdp(AfXdpFlags),
-    DpdkFlags(DpdkFlags)
+    DpdkFlags(DpdkFlags),
 }

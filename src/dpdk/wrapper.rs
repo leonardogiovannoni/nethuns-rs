@@ -118,7 +118,10 @@ fn redirect_stderr_to_null() -> io::Result<StderrGuard> {
         // Close the extra file descriptor.
         libc::close(fd_devnull);
 
-        Ok(StderrGuard { saved_fd, std_err_lock })
+        Ok(StderrGuard {
+            saved_fd,
+            std_err_lock,
+        })
     }
 }
 
@@ -164,7 +167,6 @@ impl Context {
         let file_prefix = *FILE_PREFIX
             .as_ref()
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
 
         let c_str = CString::from_str(&format!("iface={}", iface)).unwrap();
         let name = format!("net_af_packet_{}", iface);
@@ -235,7 +237,7 @@ impl Context {
         };
 
         let trasmitter = Transmitter::new(ctx, mempool);
-       
+
         (buffer_pool, receiver, trasmitter)
     }
 }

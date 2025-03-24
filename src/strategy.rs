@@ -1,8 +1,6 @@
 use std::cell::RefCell;
 
-use crate::api::{
-    BufferConsumer, BufferIndex, BufferProducer, Strategy, StrategyArgs,
-};
+use crate::api::{BufferConsumer, BufferIndex, BufferProducer, Strategy, StrategyArgs};
 
 #[derive(Clone)]
 pub struct MpscStrategy;
@@ -16,11 +14,8 @@ impl Strategy for MpscStrategy {
             StrategyArgs::Mpsc(args) => args,
             _ => panic!("Invalid argument type"),
         };
-        let (producer, consumer) = mpsc::channel(
-            nbufs,
-            args.consumer_buffer_size,
-            args.producer_buffer_size,
-        );
+        let (producer, consumer) =
+            mpsc::channel(nbufs, args.consumer_buffer_size, args.producer_buffer_size);
         (
             MpscProducer { inner: producer },
             MpscConsumer { inner: consumer },
@@ -46,7 +41,6 @@ impl Default for MpscArgs {
         }
     }
 }
-
 
 pub struct MpscConsumer {
     inner: mpsc::Consumer<BufferIndex>,
@@ -116,7 +110,6 @@ impl Default for StdArgs {
     }
 }
 
-
 pub struct StdConsumer {
     inner: RefCell<std::sync::mpsc::Receiver<BufferIndex>>,
 }
@@ -184,7 +177,6 @@ impl Default for CrossbeamArgs {
         }
     }
 }
-
 
 pub struct CrossbeamConsumer {
     inner: crossbeam_channel::Receiver<BufferIndex>,

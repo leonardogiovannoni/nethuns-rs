@@ -2,9 +2,7 @@ use crate::api::{self, BufferConsumer, BufferProducer, Context, Payload};
 use anyhow::{Result, bail};
 use netmap_rs::context::{BufferPool, Port, Receiver, RxBuf, Transmitter, TxBuf};
 use nix::sys::time::TimeVal;
-//use std::cell::RefCell;
-//use std::cell::RefCell;
-use crate::api::ContextExt;
+// use std::cell::RefCell;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -59,7 +57,7 @@ impl<S: api::Strategy> api::Context for Ctx<S> {
         self.index
     }
 }
-impl<S: api::Strategy> api::ContextExt for Ctx<S> {}
+//impl<S: api::Strategy> api::ContextExt for Ctx<S> {}
 
 struct PacketHeader {
     // index: u32,
@@ -103,11 +101,7 @@ impl<S: api::Strategy> api::Token for Tok<S> {
     }
 }
 
-impl<S: api::Strategy> api::TokenExt for Tok<S> {
-    fn duplicate(&self) -> Self {
-        ManuallyDrop::into_inner(Self::new(usize::from(self.idx) as u32, self.buffer_pool))
-    }
-}
+
 
 impl<S: api::Strategy> Drop for Tok<S> {
     fn drop(&mut self) {
@@ -130,7 +124,6 @@ impl<S: api::Strategy> std::fmt::Debug for Sock<S> {
     }
 }
 
-
 impl<S: api::Strategy> Sock<S> {
     #[inline(always)]
     fn send_inner(&self, scan: TxBuf<'_>, packet: &[u8]) -> Result<()> {
@@ -147,8 +140,7 @@ impl<S: api::Strategy> Sock<S> {
     }
 
     #[inline(always)]
-    fn recv_inner(&self, buf: RxBuf<'_>, filter: impl Fn(&Meta, &'_ [u8]) -> bool
-) -> Result<(Tok<S>, Meta)> {
+    fn recv_inner(&self, buf: RxBuf<'_>) -> Result<(Tok<S>, Meta)> {
         let RxBuf { slot, ts, .. } = buf;
         let free_idx = self
             .consumer
@@ -160,15 +152,9 @@ impl<S: api::Strategy> Sock<S> {
             slot.update_buffer(|x| *x = usize::from(free_idx) as u32);
         }
 
-        let meta = Meta {};
-
         let packet_token = Tok::new(pkt_idx, self.ctx.index);
 
-        let aliased_packet = self.ctx.peek_packet(&packet_token);
-        let aliased_packet = ManuallyDrop::new(aliased_packet);
-        if !filter(&meta, &*aliased_packet) {
-            bail!("Filter failed");
-        }
+        let meta = Meta {};
         Ok((ManuallyDrop::into_inner(packet_token), meta))
     }
 }
@@ -177,13 +163,12 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     type Context = Ctx<S>;
     type Metadata = Meta;
 
-    fn recv_token_with_filter(
-            &mut self,
-            filter: impl Fn(&Self::Metadata, &'_ [u8]) -> bool,
-        ) -> anyhow::Result<(<Self::Context as Context>::Token, Self::Metadata)> {
+    fn recv_token(
+        &mut self,
+    ) -> anyhow::Result<(<Self::Context as Context>::Token, Self::Metadata)> {
         let mut rx = self.rx.borrow_mut();
         if let Some(tmp) = rx.iter_mut().next() {
-            self.recv_inner(tmp, filter)
+            self.recv_inner(tmp)
         } else {
             // SAFETY: there are no `RxBuf`s, and so any `Slot`s, in use
             unsafe {
@@ -193,7 +178,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
                 .iter_mut()
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("No packets"))?;
-            self.recv_inner(tmp, filter)
+            self.recv_inner(tmp)
         }
     }
 
@@ -275,7 +260,7 @@ mod tests {
         let mut socket0 = Sock::<MpscStrategy>::create(
             "vale0",
             Some(0),
-          //  None,
+            //  None,
             Flags::Netmap(NetmapFlags {
                 extra_buf: 1024,
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
@@ -285,7 +270,7 @@ mod tests {
         let mut socket1 = Sock::<MpscStrategy>::create(
             "vale0",
             Some(1),
-       //     None,
+            //     None,
             Flags::Netmap(NetmapFlags {
                 extra_buf: 1024,
                 strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),

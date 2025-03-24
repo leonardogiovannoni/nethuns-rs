@@ -12,7 +12,7 @@ use std::ops::{Deref, DerefMut};
 use std::os::raw::c_int;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use api::ContextExt;
+//use api::ContextExt;
 use wrapper::{TxSlot, Umem, XdpDescData, XskSocket};
 
 // Constants from the C code
@@ -42,7 +42,7 @@ pub struct Ctx<S: api::Strategy> {
     index: usize,
 }
 
-impl<S: api::Strategy> ContextExt for Ctx<S> {}
+//impl<S: api::Strategy> ContextExt for Ctx<S> {}
 
 impl<S: api::Strategy> Ctx<S> {
     fn new(nbufs: usize, buffer_pool: UmemArea, args: api::StrategyArgs) -> (Self, S::Consumer) {
@@ -228,16 +228,16 @@ impl<S: api::Strategy> api::Token for Tok<S> {
     }
 }
 
-impl<S: api::Strategy> api::TokenExt for Tok<S> {
-    fn duplicate(&self) -> Self {
-        Tok {
-            idx: self.idx,
-            len: self.len,
-            buffer_pool: self.buffer_pool,
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
+//impl<S: api::Strategy> api::TokenExt for Tok<S> {
+//    fn duplicate(&self) -> Self {
+//        Tok {
+//            idx: self.idx,
+//            len: self.len,
+//            buffer_pool: self.buffer_pool,
+//            _marker: std::marker::PhantomData,
+//        }
+//    }
+//}
 
 impl<S: api::Strategy> Tok<S> {
     fn new(idx: u64, buffer_pool: usize, len: u32) -> ManuallyDrop<Self> {
@@ -294,11 +294,7 @@ pub struct Sock<S: api::Strategy> {
 
 impl<S: api::Strategy> Sock<S> {
     #[inline(always)]
-    fn recv_inner(
-        &self,
-        slot: XdpDescData,
-        filter: impl Fn(&Meta, &'_ [u8]) -> bool,
-    ) -> Result<(Tok<S>, Meta)> {
+    fn recv_inner(&self, slot: XdpDescData) -> Result<(Tok<S>, Meta)> {
         let offset = slot.offset;
         let len = slot.len;
         let options = slot.options;
@@ -309,15 +305,8 @@ impl<S: api::Strategy> Sock<S> {
 
         let buffer_pool = self.ctx.index;
         let token = Tok::new(offset, buffer_pool, len);
-
-
         let meta = Meta {};
-        let aliased_packet = self.ctx.peek_packet(&token);
-        let aliased_packet = ManuallyDrop::new(aliased_packet);
-        if !filter(&meta, &*aliased_packet) {
-            bail!("Filter failed");
-        }
-        Ok((ManuallyDrop::into_inner(token), Meta {}))
+        Ok((ManuallyDrop::into_inner(token), meta))
     }
 
     fn send_inner<'a>(&self, mut slot: TxSlot<'a>, payload: &[u8]) -> Result<()> {
@@ -401,20 +390,19 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     type Context = Ctx<S>;
     type Metadata = Meta;
 
-    fn recv_token_with_filter(
+    fn recv_token(
         &mut self,
-        filter: impl Fn(&Self::Metadata, &'_ [u8]) -> bool,
     ) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
         let mut rx = self.xsk.borrow_mut();
         if let Some(slot) = rx.rx_mut().next() {
-            self.recv_inner(slot, filter)
+            self.recv_inner(slot)
         } else {
             self.umem_manager.borrow_mut().refill_fill_ring()?;
             let tmp = rx
                 .rx_mut()
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("No packets"))?;
-            self.recv_inner(tmp, filter)
+            self.recv_inner(tmp)
         }
     }
 
@@ -453,7 +441,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
     fn create(
         portspec: &str,
         queue: Option<usize>,
-  //      filter: Option<()>,
+        //      filter: Option<()>,
         flags: api::Flags,
     ) -> anyhow::Result<Self> {
         let flags = match flags {
@@ -574,7 +562,7 @@ mod tests {
         let mut socket0 = Sock::<MpscStrategy>::create(
             "veth0af_xdp",
             Some(0),
-       //     None,
+            //     None,
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
@@ -587,7 +575,7 @@ mod tests {
         let mut socket1 = Sock::<MpscStrategy>::create(
             "veth1af_xdp",
             Some(0),
-     //       None,
+            //       None,
             Flags::AfXdp(AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
