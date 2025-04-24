@@ -15,7 +15,7 @@ netmap-rs = { path = "netmap_rs" }
 nix = "0.29.0"
 num_cpus = "1.16.0"
 mpsc = { path = "mpsc" }
-libxdp-sys = "0.2.1"
+libxdp-sys = { path = "libxdp-sys" }
 ringbuf = "0.4.7"
 dpdk-sys = { path = "dpdk-sys" }
 rand = "0.9.0"
