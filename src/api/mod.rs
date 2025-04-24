@@ -1,43 +1,42 @@
 use std::{
+    fmt::Debug,
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
 };
 
-use crate::{
-    af_xdp::AfXdpFlags,
-    dpdk::DpdkFlags,
-    netmap::NetmapFlags,
-    strategy::{CrossbeamArgs, MpscArgs, StdArgs},
-};
+use crate::{af_xdp::AfXdpFlags, dpdk::DpdkFlags, netmap::NetmapFlags};
 
-pub trait Strategy: Send + Clone + 'static {
-    type Producer: BufferProducer;
-    type Consumer: BufferConsumer;
-    fn create(nbuf: usize, args: StrategyArgs) -> (Self::Producer, Self::Consumer);
+pub type Result<T> = std::result::Result<T, crate::errors::Error>;
+
+#[inline]
+#[cold]
+fn cold() {}
+#[inline]
+pub fn likely(b: bool) -> bool {
+    if !b {
+        cold()
+    }
+    b
 }
-
-pub(crate) trait BufferProducer: Clone + Send {
-    fn push(&mut self, elem: BufferIndex);
-    fn flush(&mut self);
-}
-
-pub(crate) trait BufferConsumer: Send {
-    fn pop(&mut self) -> Option<BufferIndex>;
-    fn available_len(&self) -> usize;
-    fn sync(&mut self);
+#[inline]
+pub fn unlikely(b: bool) -> bool {
+    if b {
+        cold()
+    }
+    b
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct BufferIndex(usize);
+pub struct BufferRef(usize);
 
-impl From<usize> for BufferIndex {
+impl From<usize> for BufferRef {
     fn from(val: usize) -> Self {
         Self(val.into())
     }
 }
 
-impl From<BufferIndex> for usize {
-    fn from(val: BufferIndex) -> usize {
+impl From<BufferRef> for usize {
+    fn from(val: BufferRef) -> usize {
         val.0.into()
     }
 }
@@ -63,7 +62,7 @@ impl<'ctx, Ctx: Context> Deref for Payload<'ctx, Ctx> {
         unsafe {
             &*self
                 .ctx
-                .unsafe_buffer(self.token.buffer_idx(), self.token.size())
+                .unsafe_buffer(self.token.buffer_idx(), self.token.size() as usize)
         }
     }
 }
@@ -73,7 +72,7 @@ impl<'ctx, Ctx: Context> DerefMut for Payload<'ctx, Ctx> {
         unsafe {
             &mut *self
                 .ctx
-                .unsafe_buffer(self.token.buffer_idx(), self.token.size())
+                .unsafe_buffer(self.token.buffer_idx(), self.token.size() as usize)
         }
     }
 }
@@ -93,110 +92,69 @@ impl<'ctx, Ctx: Context> Payload<'ctx, Ctx> {
     }
 }
 
-/// A token returned by a receive operation. In both implementations,
-/// the token carries the buffer index (and, optionally, metadata).
 pub trait Token: Sized + Send {
-    /// Which context type produced this token?
     type Context: Context<Token = Self>;
 
     fn consume<'ctx>(self, ctx: &'ctx Self::Context) -> Payload<'ctx, Self::Context> {
         ctx.packet(self)
     }
 
-    fn buffer_idx(&self) -> BufferIndex;
+    fn buffer_idx(&self) -> BufferRef;
 
-    fn size(&self) -> usize;
+    fn size(&self) -> u32;
 
-    fn pool_id(&self) -> usize;
+    fn pool_id(&self) -> u32;
 }
-
-//pub(crate) trait TokenExt {
-//    fn duplicate(&self) -> Self;
-//}
-
-/// A trait representing the buffer pool (or context) that is used by the
-/// underlying implementation. It allows obtaining a mutable slice given
-/// a buffer index and “releasing” the buffer back to the pool.
 pub trait Context: Sized + Clone + Send {
-    /// The type of token this context uses.
-    type Token: Token<Context = Self>; // + TokenExt;
+    type Token: Token<Context = Self>;
 
+    #[inline(always)]
     fn check_token(&self, token: &Self::Token) -> bool {
         token.pool_id() == self.pool_id()
     }
 
-    /// Create/load a payload from the context using the given token.
     fn packet<'ctx>(&'ctx self, token: Self::Token) -> Payload<'ctx, Self> {
-        if !self.check_token(&token) {
+        if unlikely(!self.check_token(&token)) {
             panic!("Invalid token");
         }
         Payload::new(token, self)
     }
 
-    fn pool_id(&self) -> usize;
+    fn pool_id(&self) -> u32;
 
-    unsafe fn unsafe_buffer(&self, buf_idx: BufferIndex, size: usize) -> *mut [u8];
+    unsafe fn unsafe_buffer(&self, buf_idx: BufferRef, size: usize) -> *mut [u8];
 
-    fn release(&self, buf_idx: BufferIndex);
+    fn release(&self, buf_idx: BufferRef);
 }
 
-// pub(crate) trait ContextExt: Context {
-//     fn peek_packet(&self, token: &Self::Token) -> Payload<'_, Self> {
-//         if !self.check_token(token) {
-//             panic!("Invalid token");
-//         }
-//         let token = TokenExt::duplicate(token);
-//         Payload::new(token, self)
-//     }
-// }
-
-/// The common API for a network socket, which can send, receive, and flush.
-pub trait Socket<S: Strategy>: Send + Sized {
-    /// The associated context.
+pub trait Socket: Send + Sized {
     type Context: Context;
     type Metadata: Metadata;
-
-    fn recv(&mut self) -> anyhow::Result<(Payload<'_, Self::Context>, Self::Metadata)> {
+    type Flags: Flags;
+    //    #[inline(never)]
+    fn recv(&mut self) -> Result<(Payload<'_, Self::Context>, Self::Metadata)> {
         let (token, meta) = self.recv_token()?;
         Ok((token.consume(self.context()), meta))
     }
 
-    /// Receives a packet and returns a token.
-    fn recv_token(&mut self)
-    -> anyhow::Result<(<Self::Context as Context>::Token, Self::Metadata)>;
+    fn recv_token(&mut self) -> Result<(<Self::Context as Context>::Token, Self::Metadata)>;
 
-    /// Sends a packet. The packet is provided as a slice.
-    fn send(&mut self, packet: &[u8]) -> anyhow::Result<()>;
+    fn send(&mut self, packet: &[u8]) -> Result<()>;
 
-    /// Flush any pending operations (for example, ensuring that the TX ring
-    /// is synchronized or that completions are processed).
     fn flush(&mut self);
 
-    /// Return a reference to the socket’s context, if needed (for example,
-    /// to load a payload token).
-
-    fn create(
-        portspec: &str,
-        queue: Option<usize>,
-        // filter: Option<()>,
-        flags: Flags,
-    ) -> anyhow::Result<Self>;
+    fn create(portspec: &str, queue: Option<usize>, flags: Self::Flags) -> Result<Self>;
 
     fn context(&self) -> &Self::Context;
 }
 
 pub trait Metadata {}
 
-#[derive(Clone, Debug)]
-pub enum StrategyArgs {
-    Std(StdArgs),
-    Mpsc(MpscArgs),
-    Crossbeam(CrossbeamArgs),
-}
-
-#[derive(Clone, Debug)]
-pub enum Flags {
-    Netmap(NetmapFlags),
-    AfXdp(AfXdpFlags),
-    DpdkFlags(DpdkFlags),
-}
+pub trait Flags: Clone + Debug {}
+//
+//#[derive(Clone, Debug)]
+//pub enum Flags {
+//    Netmap(NetmapFlags),
+//    AfXdp(AfXdpFlags),
+//    DpdkFlags(DpdkFlags),
+//}

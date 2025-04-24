@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.95"
 libc = "0.2.169"
 netmap-sys = { path = "./netmap-sys" }
 nix = "0.29.0"
 ouroboros = "0.18.5"
+thiserror = "2.0.12"
+triomphe = "0.1.14"
 
 #[profile.release]
 #lto="fat"

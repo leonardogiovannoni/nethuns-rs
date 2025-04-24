@@ -1,33 +1,28 @@
-use crate::api::{self, BufferConsumer, BufferProducer, Context, Payload};
-use anyhow::{Result, bail};
+use crate::api::Result;
+use crate::api::{self, Context};
+use crate::errors::Error;
 use netmap_rs::context::{BufferPool, Port, Receiver, RxBuf, Transmitter, TxBuf};
 use nix::sys::time::TimeVal;
-// use std::cell::RefCell;
 use std::mem::ManuallyDrop;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
+use std::sync::atomic::{AtomicU32, Ordering};
+use triomphe::Arc;
 type RefCell<T> = crate::fake_refcell::FakeRefCell<T>;
 
 #[derive(Clone)]
-pub struct Ctx<S: api::Strategy> {
+pub struct Ctx {
     buffer_pool: Arc<BufferPool>,
-    producer: RefCell<S::Producer>,
-    index: usize,
+    producer: RefCell<mpsc::Producer<api::BufferRef>>,
+    index: u32,
 }
 
-impl<S: api::Strategy> Ctx<S> {
-    fn new(
-        buffer_pool: BufferPool,
-        indexes: Vec<u32>,
-        strategy_args: api::StrategyArgs,
-    ) -> (Self, S::Consumer) {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let (mut producer, cons) = S::create(indexes.len(), strategy_args);
+impl Ctx {
+    fn new(buffer_pool: BufferPool, indexes: Vec<u32>) -> (Self, mpsc::Consumer<api::BufferRef>) {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let (mut producer, cons) = mpsc::channel(indexes.len());
         let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
         let buffer_pool = Arc::new(buffer_pool);
         for idx in indexes {
-            producer.push(api::BufferIndex::from(idx as usize));
+            producer.push(api::BufferRef::from(idx as usize));
         }
         producer.flush();
         let res = Self {
@@ -38,26 +33,26 @@ impl<S: api::Strategy> Ctx<S> {
         (res, cons)
     }
 
-    unsafe fn buffer(&self, idx: api::BufferIndex) -> *mut [u8] {
+    unsafe fn buffer(&self, idx: api::BufferRef) -> *mut [u8] {
         unsafe { self.buffer_pool.buffer(usize::from(idx)) }
     }
 }
 
-impl<S: api::Strategy> api::Context for Ctx<S> {
-    type Token = Tok<S>;
-    fn release(&self, token: api::BufferIndex) {
+impl api::Context for Ctx {
+    type Token = Tok;
+    fn release(&self, token: api::BufferRef) {
         self.producer.borrow_mut().push(token);
     }
 
-    unsafe fn unsafe_buffer(&self, buf_idx: api::BufferIndex, _size: usize) -> *mut [u8] {
-        unsafe { Ctx::<S>::buffer(self, buf_idx) }
+    unsafe fn unsafe_buffer(&self, buf_idx: api::BufferRef, _size: usize) -> *mut [u8] {
+        unsafe { Ctx::buffer(self, buf_idx) }
     }
 
-    fn pool_id(&self) -> usize {
+    fn pool_id(&self) -> u32 {
         self.index
     }
 }
-//impl<S: api::Strategy> api::ContextExt for Ctx<S> {}
+//impl api::ContextExt for Ctx {}
 
 struct PacketHeader {
     // index: u32,
@@ -67,43 +62,40 @@ struct PacketHeader {
 }
 
 #[must_use]
-pub struct Tok<S: api::Strategy> {
-    idx: api::BufferIndex,
-    buffer_pool: usize,
-    _strategy: std::marker::PhantomData<S>,
+pub struct Tok {
+    idx: api::BufferRef,
+    len: u32,
+    buffer_pool: u32,
 }
 
-impl<S: api::Strategy> Tok<S> {
-    fn new(idx: u32, buffer_pool: usize) -> ManuallyDrop<Self> {
-        let idx = api::BufferIndex::from(idx as usize);
+impl Tok {
+    fn new(idx: u32, buffer_pool: u32, len: u32) -> ManuallyDrop<Self> {
+        let idx = api::BufferRef::from(idx as usize);
         ManuallyDrop::new(Self {
             idx,
+            len,
             buffer_pool,
-            _strategy: std::marker::PhantomData,
         })
     }
 }
 
-impl<S: api::Strategy> api::Token for Tok<S> {
-    type Context = Ctx<S>;
+impl api::Token for Tok {
+    type Context = Ctx;
 
-    fn buffer_idx(&self) -> api::BufferIndex {
+    fn buffer_idx(&self) -> api::BufferRef {
         self.idx
     }
 
-    fn size(&self) -> usize {
-        // TODO: currently not used
-        0xdeadbeef
+    fn size(&self) -> u32 {
+        self.len
     }
 
-    fn pool_id(&self) -> usize {
+    fn pool_id(&self) -> u32 {
         self.buffer_pool
     }
 }
 
-
-
-impl<S: api::Strategy> Drop for Tok<S> {
+impl Drop for Tok {
     fn drop(&mut self) {
         if !std::thread::panicking() {
             panic!("PacketToken must be used");
@@ -111,61 +103,56 @@ impl<S: api::Strategy> Drop for Tok<S> {
     }
 }
 
-pub struct Sock<S: api::Strategy> {
+pub struct Sock {
     tx: RefCell<Transmitter>,
     rx: RefCell<Receiver>,
-    ctx: Ctx<S>,
-    consumer: RefCell<S::Consumer>,
+    ctx: Ctx,
+    consumer: RefCell<mpsc::Consumer<api::BufferRef>>,
 }
 
-impl<S: api::Strategy> std::fmt::Debug for Sock<S> {
+impl std::fmt::Debug for Sock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Socket").finish()
     }
 }
 
-impl<S: api::Strategy> Sock<S> {
+impl Sock {
     #[inline(always)]
     fn send_inner(&self, scan: TxBuf<'_>, packet: &[u8]) -> Result<()> {
         let TxBuf { ref slot, .. } = scan;
         let token = slot.buf_idx();
-        let token = api::BufferIndex::from(token as usize);
-        let buf = unsafe { Ctx::<S>::buffer(&self.ctx, token) };
+        let token = api::BufferRef::from(token as usize);
+        let buf = unsafe { Ctx::buffer(&self.ctx, token) };
         let buf = unsafe { &mut (*buf) };
         if packet.len() > buf.len() {
-            bail!("Packet too big");
+            return Err(Error::TooBigPacket(packet.len()));
         }
         buf[..packet.len()].copy_from_slice(packet);
         Ok(())
     }
 
     #[inline(always)]
-    fn recv_inner(&self, buf: RxBuf<'_>) -> Result<(Tok<S>, Meta)> {
+    fn recv_inner(&self, buf: RxBuf<'_>) -> Result<(Tok, Meta)> {
         let RxBuf { slot, ts, .. } = buf;
-        let free_idx = self
-            .consumer
-            .borrow_mut()
-            .pop()
-            .ok_or_else(|| anyhow::anyhow!("No free buffers"))?;
+        let free_idx = self.consumer.borrow_mut().pop().ok_or(Error::NoMemory)?;
         let pkt_idx = slot.buf_idx();
         unsafe {
             slot.update_buffer(|x| *x = usize::from(free_idx) as u32);
         }
 
-        let packet_token = Tok::new(pkt_idx, self.ctx.index);
+        let packet_token = Tok::new(pkt_idx, self.ctx.index, slot.len() as u32);
 
         let meta = Meta {};
         Ok((ManuallyDrop::into_inner(packet_token), meta))
     }
 }
 
-impl<S: api::Strategy> api::Socket<S> for Sock<S> {
-    type Context = Ctx<S>;
+impl api::Socket for Sock {
+    type Context = Ctx;
     type Metadata = Meta;
+    type Flags = NetmapFlags;
 
-    fn recv_token(
-        &mut self,
-    ) -> anyhow::Result<(<Self::Context as Context>::Token, Self::Metadata)> {
+    fn recv_token(&mut self) -> Result<(<Self::Context as Context>::Token, Self::Metadata)> {
         let mut rx = self.rx.borrow_mut();
         if let Some(tmp) = rx.iter_mut().next() {
             self.recv_inner(tmp)
@@ -174,10 +161,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             unsafe {
                 rx.reset();
             }
-            let tmp = rx
-                .iter_mut()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("No packets"))?;
+            let tmp = rx.iter_mut().next().ok_or(Error::NoPacket)?;
             self.recv_inner(tmp)
         }
     }
@@ -191,10 +175,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             unsafe {
                 tx.reset();
             }
-            let next = tx
-                .iter_mut()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("No free slots"))?;
+            let next = tx.iter_mut().next().ok_or(Error::NoMemory)?;
             self.send_inner(next, packet)
         }
     }
@@ -207,14 +188,9 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         }
     }
 
-    fn create(portspec: &str, queue: Option<usize>, flags: api::Flags) -> anyhow::Result<Self> {
-        let flags = match flags {
-            api::Flags::Netmap(flags) => flags,
-            _ => panic!("Invalid flags"),
-        };
-
+    fn create(portspec: &str, queue: Option<usize>, flags: Self::Flags) -> Result<Self> {
         let p = if let Some(q) = queue {
-            &format!("{}:{}", portspec, q)
+            &format!("{}-{}", portspec, q)
         } else {
             portspec
         };
@@ -222,7 +198,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         let mut port = Port::open(p, flags.extra_buf)?;
         let extra_bufs = unsafe { port.extra_buffers_indexes() };
         let (tx, rx, buffer_pool) = port.split();
-        let (ctx, consumer) = Ctx::new(buffer_pool, extra_bufs, flags.strategy_args);
+        let (ctx, consumer) = Ctx::new(buffer_pool, extra_bufs);
         Ok(Self {
             tx: RefCell::new(tx),
             rx: RefCell::new(rx),
@@ -239,8 +215,9 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
 #[derive(Clone, Debug)]
 pub struct NetmapFlags {
     pub extra_buf: u32,
-    pub strategy_args: api::StrategyArgs,
 }
+
+impl api::Flags for NetmapFlags {}
 
 pub struct Meta {}
 
@@ -250,33 +227,14 @@ impl api::Metadata for Meta {}
 mod tests {
     use super::*;
     use crate::{
-        api::{self, Flags, Socket},
+        api::{Flags, Socket},
         netmap::Sock,
-        strategy::{MpscArgs, MpscStrategy},
     };
 
     #[test]
     fn test_send_with_flush() {
-        let mut socket0 = Sock::<MpscStrategy>::create(
-            "vale0",
-            Some(0),
-            //  None,
-            Flags::Netmap(NetmapFlags {
-                extra_buf: 1024,
-                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
-            }),
-        )
-        .unwrap();
-        let mut socket1 = Sock::<MpscStrategy>::create(
-            "vale0",
-            Some(1),
-            //     None,
-            Flags::Netmap(NetmapFlags {
-                extra_buf: 1024,
-                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
-            }),
-        )
-        .unwrap();
+        let mut socket0 = Sock::create("vale0", Some(0), NetmapFlags { extra_buf: 1024 }).unwrap();
+        let mut socket1 = Sock::create("vale0", Some(1), NetmapFlags { extra_buf: 1024 }).unwrap();
         socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();
         socket1.flush();
         let (packet, meta) = socket0.recv().unwrap();

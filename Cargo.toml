@@ -14,15 +14,17 @@ netmap-rs = { path = "netmap_rs" }
 #netmap-sys = { path = "../netmap-rs/netmap-sys" }
 nix = "0.29.0"
 num_cpus = "1.16.0"
-mpsc = { path = "mpsc" }
+mpsc = { path = "mpsc2" }
 libxdp-sys = "0.2.1"
-crossbeam-channel = "0.5.14"
-crossbeam-queue = "0.3.12"
 ringbuf = "0.4.7"
 dpdk-sys = { path = "dpdk-sys" }
 rand = "0.9.0"
 procspawn = "1.0.1"
 arrayvec = "0.7.6"
+libbpf-sys = "1.5.0"
+aya = "0.13.1"
+thiserror = "2.0.12"
+triomphe = "0.1.14"
 
 #libxdp-sys = { path = "libxdp-sys" }
 
@@ -31,5 +33,6 @@ panic = "abort"
 
 [profile.release]
 lto = "fat"
-#debug = true
+debug = true
 panic = "abort"
+debug-assertions = false

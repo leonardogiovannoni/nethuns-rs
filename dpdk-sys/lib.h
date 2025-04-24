@@ -9,6 +9,11 @@
 #include <rte_mbuf.h>
 #include <rte_ether.h>
 #include <rte_bus_vdev.h>
+//#include <dev_driver.h>
+//#include <bus_driver.h>
+//#include <rte_dev.h>
+//#include <rte_device.h>
+//#include <rte_bus.h>
 
 const size_t RTE_ETHER_ADDR_SIZE = sizeof(struct rte_ether_addr);
 const size_t RTE_ARP_IPV4_SIZE = sizeof(struct rte_arp_ipv4);
@@ -467,3 +472,26 @@ void *rust_rte_pktmbuf_mtod(struct rte_mbuf *m)
 {
     return rte_pktmbuf_mtod(m, void *);
 }
+
+
+//void rust_rte_mempool_put_bulk(struct rte_mbuf **mbs, uint32_t count)
+//{
+//    //rte_mempool_put_bulk(mp, mbs, count);
+//    for (uint32_t i = 0; i < count; i++)
+//    {
+//        rte_pktmbuf_free(mbs[i]);
+//    }
+//}
+//rte_pktmbuf_free_bulk
+
+void rust_rte_pktmbuf_free_bulk(struct rte_mbuf **mbs, uint32_t count)
+{
+    rte_pktmbuf_free_bulk(mbs, count);
+}
+
+//const char *
+//my_get_bus_name(struct rte_device *dev) {
+//    if (dev && dev->bus)
+//        return dev->bus->name;
+//    return NULL;
+//}

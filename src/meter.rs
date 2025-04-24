@@ -1,6 +1,6 @@
 //mod fake_refcell;
 use anyhow::{Result, bail};
-use api::{Flags, Socket, Strategy, StrategyArgs, Token};
+use api::{Flags, Socket, Token};
 use clap::{Parser, Subcommand};
 use etherparse::{NetHeaders, PacketHeaders};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -8,10 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
-use strategy::{CrossbeamArgs, CrossbeamStrategy, MpscArgs, MpscStrategy, StdStrategy};
 
-use crate::strategy::StdArgs;
-use crate::{af_xdp, api, dpdk, netmap, strategy};
+use crate::{af_xdp, api, dpdk, netmap};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -66,19 +64,6 @@ struct NetmapArgs {
     #[clap(long, default_value_t = 256)]
     producer_buffer_size: usize,
 }
-
-/*        let mut socket0 = Sock::<MpscStrategy>::create(
-    "veth0dpdk",
-    Some(0),
-    None,
-    Flags::DpdkFlags(DpdkFlags {
-        strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
-        num_mbufs: 8192,
-        mbuf_cache_size: 250,
-        mbuf_default_buf_size: 2176,
-    }),
-)
-.unwrap(); */
 
 #[derive(Parser, Debug)]
 struct DpdkArgs {
@@ -135,7 +120,7 @@ fn print_addrs(frame: &[u8]) -> Result<String> {
     }
 }
 
-fn run<Sock: Socket<S> + 'static, S: Strategy>(flags: Flags, args: &Args) -> Result<()> {
+fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
     println!("Test {} started with parameters:", args.interface);
     println!("* interface: {}", args.interface);
     println!("* sockets: {}", args.sockets);
@@ -170,11 +155,15 @@ fn run<Sock: Socket<S> + 'static, S: Strategy>(flags: Flags, args: &Args) -> Res
     for i in 0..args.sockets {
         let portspec = if args.sockets > 1 {
             // In a multi-socket scenario, append the socket id.
-            format!("{}:{}", args.interface, i)
+            //format!("{}:{}", args.interface, i)
+            args.interface.clone()
         } else {
             args.interface.clone()
         };
-        let socket = Sock::create(&portspec, args.queue, flags.clone())?;
+        let socket = Sock::create(&portspec, Some(i) /*args.queue*/, flags.clone())?;
+        for _ in 0..32 - 1 {
+            std::mem::forget(socket.context().clone());
+        }
         sockets.push(socket);
     }
 
@@ -217,7 +206,7 @@ fn run<Sock: Socket<S> + 'static, S: Strategy>(flags: Flags, args: &Args) -> Res
             let counter = totals[i].clone();
             let debug = args.debug;
             let handle = {
-                let ctx = socket.context().clone();
+                //let ctx = socket.context().clone();
                 thread::spawn(move || {
                     let mut local_counter = 0;
                     while !term_thread.load(Ordering::SeqCst) {
@@ -226,16 +215,17 @@ fn run<Sock: Socket<S> + 'static, S: Strategy>(flags: Flags, args: &Args) -> Res
                             counter.fetch_add(local_counter, Ordering::SeqCst);
                             local_counter = 0;
                         }
-                        let res: Result<()> = (|| {
-                            let (pkt, meta) = socket.recv()?;
+
+                        let res: Option<()> = (|| {
+                            let (pkt, meta) = socket.recv().ok()?;
                             if debug {
                                 if let Ok(info) = print_addrs(&pkt) {
                                     println!("Thread {}: {}", i, info);
                                 }
                             }
-                            Ok(())
+                            Some(())
                         })();
-                        if res.is_err() {
+                        if res.is_none() {
                             // Optionally handle the error here.
                         }
                     }
@@ -244,31 +234,42 @@ fn run<Sock: Socket<S> + 'static, S: Strategy>(flags: Flags, args: &Args) -> Res
             handles.push(handle);
         }
     } else {
+        println!("Single-threaded mode");
         // Single-threaded loop over all sockets.
         let totals = Arc::new(totals);
         let term_loop = term.clone();
         let debug = args.debug;
         let handle = thread::spawn(move || {
             let mut local_counters = vec![0; sockets.len()];
-            while !term_loop.load(Ordering::SeqCst) {
-                for (i, socket) in sockets.iter_mut().enumerate() {
-                    let res: Result<()> = (|| {
-                        // let packet = &*socket.recv()?.load(&ctx);
-                        let (packet, meta) = socket.recv()?;
-                        local_counters[i] += 1;
-                        if local_counters[i] == BULK {
-                            totals[i].fetch_add(local_counters[i], Ordering::SeqCst);
-                            local_counters[i] = 0;
-                        }
-                        if debug {
-                            if let Ok(info) = print_addrs(&*packet) {
-                                println!("Socket {}: {}", i, info);
+            while !term_loop.load(Ordering::Acquire) {
+                for _ in 0..1000 {
+                    for (i, socket) in sockets.iter_mut().enumerate() {
+                        let res: Option<()> = (|| {
+                            let (packet, meta) = socket.recv().ok()?;
+                            // let tmp = socket.recv();
+                            // let (packet, meta) = match tmp {
+                            //     Ok((packet, meta)) => (packet, meta),
+                            //     Err(err) => {
+                            //         println!("{:?}", err);
+                            //         return None;
+                            //     }
+                            // };
+
+                            local_counters[i] += 1;
+                            if local_counters[i] == BULK {
+                                totals[i].fetch_add(local_counters[i], Ordering::Relaxed);
+                                local_counters[i] = 0;
                             }
+                            if debug {
+                                if let Ok(info) = print_addrs(&*packet) {
+                                    println!("Socket {}: {}", i, info);
+                                }
+                            }
+                            Some(())
+                        })();
+                        if res.is_none() {
+                            // Optionally handle the error here.
                         }
-                        Ok(())
-                    })();
-                    if res.is_err() {
-                        // Optionally handle the error here.
                     }
                 }
             }
@@ -289,39 +290,27 @@ pub(crate) fn routine() -> Result<()> {
     let args = Args::parse();
     match &args.framework {
         Framework::Netmap(netmap_args) => {
-            let flags = Flags::Netmap(netmap::NetmapFlags {
+            let flags = netmap::NetmapFlags {
                 extra_buf: netmap_args.extra_buf,
-                strategy_args: StrategyArgs::Mpsc(MpscArgs {
-                    consumer_buffer_size: netmap_args.consumer_buffer_size,
-                    producer_buffer_size: netmap_args.producer_buffer_size,
-                }),
-            });
-            run::<netmap::Sock<MpscStrategy>, _>(flags, &args)?;
+            };
+            run::<netmap::Sock>(flags, &args)?;
         }
         Framework::AfXdp(af_xdp_args) => {
-            let flags = Flags::AfXdp(af_xdp::AfXdpFlags {
+            let flags = af_xdp::AfXdpFlags {
                 bind_flags: af_xdp_args.bind_flags,
                 xdp_flags: af_xdp_args.xdp_flags,
-                strategy_args: StrategyArgs::Mpsc(MpscArgs {
-                    consumer_buffer_size: 256,
-                    producer_buffer_size: 256,
-                }),
-                num_frames: 4096,
+                num_frames: 4096 * 8,
                 frame_size: 2048,
-            });
-            run::<af_xdp::Sock<MpscStrategy>, _>(flags, &args)?;
+            };
+            run::<af_xdp::Sock>(flags, &args)?;
         }
         Framework::Dpdk(dpdk_args) => {
-            let flags = Flags::DpdkFlags(dpdk::DpdkFlags {
-                strategy_args: api::StrategyArgs::Mpsc(MpscArgs {
-                    consumer_buffer_size: dpdk_args.consumer_buffer_size,
-                    producer_buffer_size: dpdk_args.producer_buffer_size,
-                }),
+            let flags = dpdk::DpdkFlags {
                 num_mbufs: dpdk_args.num_mbufs,
                 mbuf_cache_size: dpdk_args.mbuf_cache_size,
                 mbuf_default_buf_size: dpdk_args.mbuf_default_buf_size as u16,
-            });
-            run::<dpdk::Sock<MpscStrategy>, _>(flags, &args)?;
+            };
+            run::<dpdk::Sock>(flags, &args)?;
         }
         _ => bail!("Unsupported framework"),
     }

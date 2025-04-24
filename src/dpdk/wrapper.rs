@@ -1,27 +1,18 @@
 const RX_RING_SIZE: u16 = 1024;
-const NUM_MBUFS: u32 = 8192;
-const MBUF_CACHE_SIZE: u32 = 250;
 const BURST_SIZE: u16 = 32;
-const CUSTOM_ETHER_TYPE: u16 = 0x88B5;
-const PORT_ID: u16 = 0;
-use anyhow::{Result, bail};
+
 use arrayvec::ArrayVec;
 use dpdk_sys::*;
 use rand::RngCore;
 use std::cell::UnsafeCell;
-use std::collections::VecDeque;
 use std::ffi::CString;
+use std::io;
 use std::io::StderrLock;
 use std::mem;
-use std::ops::Deref;
 use std::os::fd::RawFd;
 use std::os::raw::{c_char, c_int};
 use std::ptr::{self, NonNull};
-use std::rc::Rc;
-use std::slice;
-use std::str::FromStr;
-use std::sync::{Arc, LazyLock};
-use std::{env, io};
+use std::sync::Arc;
 
 pub(crate) fn resultify(x: i32) -> io::Result<u32> {
     match x >= 0 {
@@ -31,7 +22,7 @@ pub(crate) fn resultify(x: i32) -> io::Result<u32> {
 }
 
 /// Initializes a port with the given mempool.
-pub(crate) unsafe fn init_port(port: u16, pool: *mut rte_mempool) -> Result<()> {
+pub(crate) unsafe fn init_port(port: u16, pool: *mut rte_mempool) -> io::Result<()> {
     // Zero-initialize the port configuration.
     let mut port_conf: rte_eth_conf = unsafe { mem::zeroed() };
     unsafe { resultify(rte_eth_dev_configure(port, 1, 1, &mut port_conf))? };
@@ -58,6 +49,7 @@ pub(crate) unsafe fn init_port(port: u16, pool: *mut rte_mempool) -> Result<()> 
     };
 
     unsafe { resultify(rte_eth_dev_start(port))? };
+    //unsafe { resultify(rte_eth_promiscuous_enable(port))? };
 
     Ok(())
 }
@@ -68,6 +60,8 @@ fn find_port(name: &str) -> Option<u16> {
         let port_name = [0; 256];
         if unsafe { rte_eth_dev_get_name_by_port(port_id, port_name.as_ptr() as *mut i8) } == 0 {
             let port_name = unsafe { std::ffi::CStr::from_ptr(port_name.as_ptr() as *const i8) };
+            let mut dev_info: rte_eth_dev_info = unsafe { mem::zeroed() };
+            unsafe { rte_eth_dev_info_get(port_id, &mut dev_info) };
             if port_name.to_str().unwrap() == name {
                 return Some(port_id);
             }
@@ -139,42 +133,25 @@ impl Context {
         mbuf_cache_size: u32,
         mbuf_default_buf_size: u16,
         queue_id: u16,
-    ) -> Result<Self> {
-        let _guard = redirect_stderr_to_null()?;
-        static FILE_PREFIX: LazyLock<Result<u64>> = LazyLock::new(|| -> Result<_> {
-            //let _guard = redirect_stderr_to_null()?;
-            let random_name = rand::rng().next_u64().to_string();
-            let file_prefix = rand::rng().next_u64();
-            let file_prefix_str = format!("--file-prefix={}", file_prefix);
-            //let vdev = format!("--vdev=net_af_packet0,iface={}", iface);
-            let init_args = vec![random_name, file_prefix_str];
-            //println!("Server: Starting with arguments: {:?}", args);
-            let mut cstrings: Vec<CString> = init_args
-                .iter()
-                .map(|arg| CString::new(arg.as_str()).unwrap())
-                .collect();
-            // Build a mutable array of *mut c_char pointers.
-            let mut c_ptrs: Vec<*mut c_char> = cstrings
-                .iter_mut()
-                .map(|cstr| cstr.as_ptr() as *mut c_char)
-                .collect();
-            let argc = c_ptrs.len() as c_int;
+    ) -> io::Result<Self> {
+        let file_prefix = rand::rng().next_u64();
+        let file_prefix_str = format!("--file-prefix={}", "server");
+        let tmp = "-a".to_string();
 
-            unsafe { resultify(rte_eal_init(argc, c_ptrs.as_mut_ptr()))? };
-            Ok(file_prefix)
-        });
+        let tmp2 = iface.to_string(); // file_prefix);
+        let init_args = vec![file_prefix_str, tmp, tmp2];
+        let mut cstrings: Vec<CString> = init_args
+            .iter()
+            .map(|arg| CString::new(arg.as_str()).unwrap())
+            .collect();
+        let mut c_ptrs: Vec<*mut c_char> = cstrings
+            .iter_mut()
+            .map(|cstr| cstr.as_ptr() as *mut c_char)
+            .collect();
+        let argc = c_ptrs.len() as c_int;
 
-        let file_prefix = *FILE_PREFIX
-            .as_ref()
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        unsafe { resultify(rte_eal_init(argc, c_ptrs.as_mut_ptr()))? };
 
-        let c_str = CString::from_str(&format!("iface={}", iface)).unwrap();
-        let name = format!("net_af_packet_{}", iface);
-        let name = CString::new(name).unwrap();
-        let ret = unsafe { rte_vdev_init(name.as_ptr(), c_str.as_ptr()) };
-        if ret < 0 {
-            bail!("Cannot create vdev");
-        }
         let random_name = rand::rng().next_u64().to_string();
 
         let mbuf_pool = unsafe {
@@ -188,9 +165,12 @@ impl Context {
             )
         };
         if mbuf_pool.is_null() {
-            bail!("Cannot create mbuf pool");
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Cannot create mbuf pool",
+            ));
         }
-        let port_id = find_port(name.to_str().unwrap()).expect("Cannot find port");
+        let port_id = 0;
         unsafe {
             init_port(port_id, mbuf_pool)?;
         }
@@ -208,7 +188,7 @@ impl Context {
         mbuf_cache_size: u32,
         mbuf_default_buf_size: u16,
         queue_id: u16,
-    ) -> Result<(BufferPool, Receiver, Transmitter)> {
+    ) -> io::Result<(BufferPool, Receiver, Transmitter)> {
         let ctx = Self::inner_new(
             iface,
             num_mbufs,
@@ -245,9 +225,9 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         unsafe {
-            rte_mempool_free(self.ptr);
             rte_eth_dev_stop(self.port_id);
             rte_eth_dev_close(self.port_id);
+            rte_mempool_free(self.ptr);
         }
     }
 }
@@ -267,12 +247,6 @@ impl BufferPool {
         let ctx = unsafe { &mut *self.ctx.get() };
         unsafe { rust_rte_pktmbuf_alloc(ctx.ptr) }
     }
-
-    pub(crate) fn free(&mut self, mbuf: *mut rte_mbuf) {
-        unsafe {
-            rust_rte_pktmbuf_free(mbuf);
-        }
-    }
 }
 
 pub(crate) struct Receiver {
@@ -287,14 +261,9 @@ pub(crate) struct Receiver {
 unsafe impl Send for Receiver {}
 
 impl Receiver {
-    pub(crate) fn iter_mut(&mut self) -> ReceiverIterMut {
+    pub(crate) fn iter_mut<'a>(&'a mut self) -> ReceiverIterMut<'a> {
         ReceiverIterMut { rx: self }
     }
-}
-
-// tied to context lifetime
-pub(crate) struct RawRteMbuf {
-    ptr: *mut rte_mbuf,
 }
 
 pub(crate) struct ReceiverIterMut<'a> {
@@ -302,6 +271,7 @@ pub(crate) struct ReceiverIterMut<'a> {
 }
 
 impl<'a> ReceiverIterMut<'a> {
+    #[inline(always)]
     fn advance(&mut self) -> Option<NonNull<rte_mbuf>> {
         if self.rx.index == self.rx.nb_rx {
             let port_id = self.rx.port_id;
@@ -309,6 +279,7 @@ impl<'a> ReceiverIterMut<'a> {
             let res = unsafe {
                 rust_rte_eth_rx_burst(port_id, queue_id, self.rx.bufs.as_mut_ptr(), BURST_SIZE)
             };
+
             self.rx.index = 0;
             self.rx.nb_rx = res as usize;
             if res == 0 {
@@ -325,34 +296,22 @@ impl<'a> ReceiverIterMut<'a> {
 
 pub(crate) struct RteMBuf {
     ptr: NonNull<rte_mbuf>,
-    len: usize,
 }
 
 impl RteMBuf {
-    pub(crate) fn len(&self) -> usize {
-        self.len
-    }
-
     pub(crate) fn as_ptr(&self) -> *mut rte_mbuf {
         self.ptr.as_ptr()
-    }
-}
-
-impl Drop for RteMBuf {
-    fn drop(&mut self) {
-        unsafe {
-            rust_rte_pktmbuf_free(self.ptr.as_ptr());
-        }
     }
 }
 
 impl<'a> Iterator for ReceiverIterMut<'a> {
     type Item = RteMBuf;
 
+    #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
         self.advance().map(|ptr| {
-            let len = unsafe { (*ptr.as_ptr()).__bindgen_anon_2.__bindgen_anon_1.pkt_len as usize };
-            RteMBuf { ptr, len }
+            //let len = unsafe { (*ptr.as_ptr()).__bindgen_anon_2.__bindgen_anon_1.pkt_len as usize };
+            RteMBuf { ptr }
         })
     }
 }
@@ -372,8 +331,6 @@ impl Transmitter {
     }
 
     pub(crate) fn flush(&mut self) {
-        //let port_id = unsafe { (*self.ctx.get()).port_id };
-        //let queue_id = unsafe { (*self.ctx.get()).queue_id };
         let sent = unsafe {
             let len = self.ready_bufs.len();
             let ready_bufs: *mut *mut rte_mbuf = self.ready_bufs.as_mut_ptr() as *mut *mut _;
@@ -431,7 +388,6 @@ impl<'a> TransmitterIterMut<'a> {
             }
 
             let slice = &mut self.tx.bufs[old_len..];
-
             let res = unsafe {
                 rust_rte_pktmbuf_alloc_bulk(
                     self.tx.mempool,

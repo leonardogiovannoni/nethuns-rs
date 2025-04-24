@@ -1,45 +1,28 @@
 mod wrapper;
-use anyhow::{Result, bail};
-//use api::ContextExt;
+use crate::api;
+use crate::api::Result;
+use crate::errors::Error;
 use dpdk_sys::*;
-use etherparse::err::packet;
-use std::cell::RefCell;
-use std::cell::UnsafeCell;
-use std::mem;
 use std::mem::ManuallyDrop;
 use std::slice;
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
-use wrapper::BufferPool;
 use wrapper::Context;
 use wrapper::Receiver;
 use wrapper::RteMBuf;
 use wrapper::RteMBufRef;
 use wrapper::Transmitter;
 
-use crate::api;
-use crate::api::BufferConsumer;
-use crate::api::BufferProducer;
-const RX_RING_SIZE: u16 = 1024;
-const NUM_MBUFS: u32 = 8192;
-const MBUF_CACHE_SIZE: u32 = 250;
-const BURST_SIZE: u16 = 32;
-const CUSTOM_ETHER_TYPE: u16 = 0x88B5;
-const PORT_ID: u16 = 0;
-
-type Filter = ();
+type RefCell<T> = crate::fake_refcell::FakeRefCell<T>;
 
 #[derive(Clone)]
-pub struct Ctx<S: api::Strategy> {
-    producer: RefCell<S::Producer>,
-    index: usize,
+pub struct Ctx {
+    producer: RefCell<mpsc::Producer<api::BufferRef>>,
+    index: u32,
 }
 
-//impl<S: api::Strategy> ContextExt for Ctx<S> {}
-
-impl<S: api::Strategy> Ctx<S> {
-    unsafe fn buffer(&self, idx: api::BufferIndex) -> *mut [u8] {
+impl Ctx {
+    unsafe fn buffer(&self, idx: api::BufferRef) -> *mut [u8] {
         let idx: usize = idx.into();
         let ptr = idx as *mut rte_mbuf;
         // TODO ensure only one segment, i.e. data_len == pkt_len
@@ -49,10 +32,11 @@ impl<S: api::Strategy> Ctx<S> {
     }
 }
 
-impl<S: api::Strategy> Ctx<S> {
-    fn new(nbufs: usize, strategy_args: api::StrategyArgs) -> (Self, S::Consumer) {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let (producer, cons) = S::create(nbufs, strategy_args);
+impl Ctx {
+    fn new(nbufs: usize) -> (Self, mpsc::Consumer<api::BufferRef>) {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let (producer, cons) = mpsc::channel(nbufs);
+        // S::create(nbufs, strategy_args);
         let res = Self {
             producer: RefCell::new(producer),
             index: COUNTER.fetch_add(1, Ordering::SeqCst),
@@ -61,41 +45,36 @@ impl<S: api::Strategy> Ctx<S> {
     }
 }
 
-pub struct Tok<S: api::Strategy> {
-    idx: api::BufferIndex,
-    pool_id: usize,
-    _phantom: std::marker::PhantomData<S>,
+pub struct Tok {
+    idx: api::BufferRef,
+    pool_id: u32,
 }
 
-impl<S: api::Strategy> Tok<S> {
-    fn new(idx: api::BufferIndex, pool_id: usize) -> ManuallyDrop<Self> {
-        ManuallyDrop::new(Self {
-            idx,
-            pool_id,
-            _phantom: std::marker::PhantomData,
-        })
+impl Tok {
+    fn new(idx: api::BufferRef, pool_id: u32) -> ManuallyDrop<Self> {
+        ManuallyDrop::new(Self { idx, pool_id })
     }
 }
 
-impl<S: api::Strategy> api::Token for Tok<S> {
-    type Context = Ctx<S>;
+impl api::Token for Tok {
+    type Context = Ctx;
 
-    fn buffer_idx(&self) -> api::BufferIndex {
+    fn buffer_idx(&self) -> api::BufferRef {
         self.idx
     }
 
-    fn size(&self) -> usize {
+    fn size(&self) -> u32 {
         let idx: usize = self.idx.into();
         let ptr = idx as *mut rte_mbuf;
-        unsafe { (*ptr).__bindgen_anon_2.__bindgen_anon_1.data_len as usize }
+        unsafe { (*ptr).__bindgen_anon_2.__bindgen_anon_1.data_len as u32 }
     }
 
-    fn pool_id(&self) -> usize {
+    fn pool_id(&self) -> u32 {
         self.pool_id
     }
 }
 
-//impl<S: api::Strategy> api::TokenExt for Tok<S> {
+//impl api::TokenExt for Tok {
 //    fn duplicate(&self) -> Self {
 //        Self {
 //            idx: self.idx,
@@ -105,55 +84,49 @@ impl<S: api::Strategy> api::Token for Tok<S> {
 //    }
 //}
 
-impl<S: api::Strategy> api::Context for Ctx<S> {
-    type Token = Tok<S>;
+impl api::Context for Ctx {
+    type Token = Tok;
 
-    fn pool_id(&self) -> usize {
+    fn pool_id(&self) -> u32 {
         self.index
     }
 
-    unsafe fn unsafe_buffer(&self, buf_idx: api::BufferIndex, size: usize) -> *mut [u8] {
+    unsafe fn unsafe_buffer(&self, buf_idx: api::BufferRef, _size: usize) -> *mut [u8] {
         unsafe { Ctx::buffer(self, buf_idx) }
     }
 
-    fn release(&self, buf_idx: api::BufferIndex) {
+    fn release(&self, buf_idx: api::BufferRef) {
         self.producer.borrow_mut().push(buf_idx);
     }
 }
 
-pub struct Sock<S: api::Strategy> {
+pub struct Sock {
     tx: RefCell<Transmitter>,
     rx: RefCell<Receiver>,
-    ctx: Ctx<S>,
-    consumer: RefCell<S::Consumer>,
+    ctx: Ctx,
+    consumer: RefCell<mpsc::Consumer<api::BufferRef>>,
 }
 
 pub struct Meta {}
 
 impl api::Metadata for Meta {}
 
-impl<S: api::Strategy> Sock<S> {
+impl Sock {
+    //#[inline(never)]
+    //#[cold]
     fn flush_to_memory_pool(&mut self) {
         let mut consumer = self.consumer.borrow_mut();
-        loop {
-            let mut b = false;
-            while let Some(val) = consumer.pop() {
-                let ptr = usize::from(val) as *mut rte_mbuf;
-
-                unsafe { rust_rte_pktmbuf_free(ptr) };
-                b = true;
-            }
-            if !b {
-                break;
-            }
-
-            consumer.sync();
-        }
+        consumer.sync();
+        let buf = &mut consumer.cached;
+        unsafe { rust_rte_pktmbuf_free_bulk(buf.as_mut_ptr() as *mut _, buf.len() as u32) };
+        buf.clear();
     }
 
-    fn recv_inner(&self, buf: RteMBuf) -> Result<(Tok<S>, Meta)> {
+    #[inline(always)]
+    fn recv_inner(&self, buf: RteMBuf) -> Result<(Tok, Meta)> {
+        let buf = ManuallyDrop::new(buf);
         let token = buf.as_ptr() as usize;
-        let token = api::BufferIndex::from(token);
+        let token = api::BufferRef::from(token);
         let token = Tok::new(token, api::Context::pool_id(&self.ctx));
         let meta = Meta {};
         Ok((ManuallyDrop::into_inner(token), Meta {}))
@@ -164,7 +137,7 @@ impl<S: api::Strategy> Sock<S> {
         let len = packet.len() as u16;
         let buf = unsafe {
             if len > (*m).__bindgen_anon_2.__bindgen_anon_1.buf_len {
-                bail!("Packet too big");
+                return Err(Error::TooBigPacket(len as usize));
             }
             (*m).__bindgen_anon_1.__bindgen_anon_1.data_off = 0;
             (*m).__bindgen_anon_2.__bindgen_anon_1.data_len += len;
@@ -177,51 +150,35 @@ impl<S: api::Strategy> Sock<S> {
     }
 }
 
-impl<S: api::Strategy> api::Socket<S> for Sock<S> {
-    type Context = Ctx<S>;
+impl api::Socket for Sock {
+    type Context = Ctx;
     type Metadata = Meta;
+    type Flags = DpdkFlags;
 
-    fn recv_token(
-        &mut self,
-    ) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
+    fn recv_token(&mut self) -> Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
         if let Some(tmp) = self.rx.borrow_mut().iter_mut().next() {
             self.recv_inner(tmp)
         } else {
             self.flush_to_memory_pool();
             let mut rx = self.rx.borrow_mut();
-            let tmp = rx
-                .iter_mut()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("No packets"))?;
+            //let mut consumer = self.consumer.borrow_mut();
+            let tmp = rx.iter_mut().next().ok_or(Error::NoPacket)?;
             self.recv_inner(tmp)
         }
     }
 
-    fn send(&mut self, packet: &[u8]) -> anyhow::Result<()> {
-        if let Some(scan) = self.tx.borrow_mut().iter_mut().next() {
-            self.send_inner(scan, packet)
-        } else {
-            self.flush_to_memory_pool();
-            let mut tx = self.tx.borrow_mut();
-            let scan = tx
-                .iter_mut()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("No packets"))?;
-            self.send_inner(scan, packet)
-        }
+    fn send(&mut self, packet: &[u8]) -> Result<()> {
+        let mut tx = self.tx.borrow_mut();
+        let scan = tx.iter_mut().next().ok_or(Error::NoPacket)?;
+        self.send_inner(scan, packet)
     }
 
     fn flush(&mut self) {
         self.tx.borrow_mut().flush();
     }
 
-    fn create(portspec: &str, queue: Option<usize>, flags: api::Flags) -> anyhow::Result<Self> {
-        let flags = match flags {
-            api::Flags::DpdkFlags(flags) => flags,
-            _ => panic!("Invalid flags"),
-        };
-
-        let (_, rx, tx) = Context::new(
+    fn create(portspec: &str, queue: Option<usize>, flags: Self::Flags) -> Result<Self> {
+        let (mut buffer_pool, rx, tx) = Context::new(
             portspec,
             flags.num_mbufs,
             flags.mbuf_cache_size,
@@ -229,7 +186,18 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             queue.unwrap_or(0) as u16,
         )?;
 
-        let (ctx, consumer) = Ctx::new(flags.num_mbufs as usize, flags.strategy_args);
+        let (ctx, consumer) = Ctx::new(flags.num_mbufs as usize);
+        loop {
+            let tmp = buffer_pool.allocate();
+            if tmp.is_null() {
+                break;
+            }
+            assert!(!tmp.is_null());
+            let a = &mut *ctx.producer.borrow_mut();
+            let tmp = tmp as usize;
+            let tmp = api::BufferRef::from(tmp);
+            a.push(tmp);
+        }
         Ok(Self {
             tx: RefCell::new(tx),
             rx: RefCell::new(rx),
@@ -245,42 +213,38 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
 
 #[derive(Clone, Debug)]
 pub struct DpdkFlags {
-    pub strategy_args: api::StrategyArgs,
     pub num_mbufs: u32,
     pub mbuf_cache_size: u32,
     pub mbuf_default_buf_size: u16,
 }
 
+impl api::Flags for DpdkFlags {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        api::{self, Flags, Socket},
-        strategy::{MpscArgs, MpscStrategy},
-    };
+    use crate::api::Socket;
 
     #[test]
     fn test_send_with_flush() {
-        let mut socket0 = Sock::<MpscStrategy>::create(
+        let mut socket0 = Sock::create(
             "veth0dpdk",
             Some(0),
-            Flags::DpdkFlags(DpdkFlags {
-                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+            DpdkFlags {
                 num_mbufs: 8192,
                 mbuf_cache_size: 250,
                 mbuf_default_buf_size: 2176,
-            }),
+            },
         )
         .unwrap();
-        let mut socket1 = Sock::<MpscStrategy>::create(
+        let mut socket1 = Sock::create(
             "veth1dpdk",
             Some(0),
-            Flags::DpdkFlags(DpdkFlags {
-                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
+            DpdkFlags {
                 num_mbufs: 8192,
                 mbuf_cache_size: 250,
                 mbuf_default_buf_size: 2176,
-            }),
+            },
         )
         .unwrap();
         socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();

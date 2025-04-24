@@ -4,9 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-arrayvec = "0.7.6"
+arrayvec = { path = "arrayvec" }
+crossbeam-utils = "0.8.21"
+kanal = "0.1.1"
 num_cpus = "1.16.0"
 parking_lot = "0.12.3"
-ringbuf = "0.4.7"
+ringbuf = "0.4.8"
+#ringbuf = { path = "ringbuf" }
 smallvec = "1.14.0"
 static_assertions = "1.1.0"
+triomphe = "0.1.14"

@@ -1,8 +1,5 @@
 pub mod context;
-
-pub mod port;
-
-//pub use netmap_sys::bindings::*;
+pub mod errors;
 
 #[cfg(test)]
 mod tests {

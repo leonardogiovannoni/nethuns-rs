@@ -8,10 +8,9 @@ use std::thread;
 use std::time::Duration;
 
 // Import the framework APIs.
-use crate::strategy::{MpscArgs, MpscStrategy};
 use crate::{
     af_xdp,
-    api::{Flags, Socket, Strategy, StrategyArgs},
+    api::{Flags, Socket},
     netmap,
 };
 
@@ -81,27 +80,19 @@ pub(crate) fn routine() -> Result<()> {
     // Choose the proper framework and run the forwarder.
     match args.framework.clone() {
         Framework::Netmap(netmap_args) => {
-            let flags = Flags::Netmap(netmap::NetmapFlags {
+            let flags = netmap::NetmapFlags {
                 extra_buf: netmap_args.extra_buf,
-                strategy_args: StrategyArgs::Mpsc(MpscArgs {
-                    consumer_buffer_size: netmap_args.consumer_buffer_size,
-                    producer_buffer_size: netmap_args.producer_buffer_size,
-                }),
-            });
-            run_forwarder::<netmap::Sock<MpscStrategy>>(flags, &args, term)
+            };
+            run_forwarder::<netmap::Sock>(flags, &args, term)
         }
         Framework::AfXdp(af_xdp_args) => {
-            let flags = Flags::AfXdp(af_xdp::AfXdpFlags {
+            let flags = af_xdp::AfXdpFlags {
                 bind_flags: af_xdp_args.bind_flags,
                 xdp_flags: af_xdp_args.xdp_flags,
-                strategy_args: StrategyArgs::Mpsc(MpscArgs {
-                    consumer_buffer_size: 256,
-                    producer_buffer_size: 256,
-                }),
                 num_frames: 4096,
                 frame_size: 2048,
-            });
-            run_forwarder::<af_xdp::Sock<MpscStrategy>>(flags, &args, term)
+            };
+            run_forwarder::<af_xdp::Sock>(flags, &args, term)
         }
     }
 }
@@ -111,9 +102,9 @@ pub(crate) fn routine() -> Result<()> {
 /// This function creates an input and an output socket, spawns a meter thread,
 /// then enters a loop where it receives a packet on the input interface, and forwards it
 /// to the output interface using a retry loop.
-fn run_forwarder<Sock>(flags: Flags, args: &Args, term: Arc<AtomicBool>) -> Result<()>
+fn run_forwarder<Sock>(flags: Sock::Flags, args: &Args, term: Arc<AtomicBool>) -> Result<()>
 where
-    Sock: Socket<MpscStrategy> + 'static,
+    Sock: Socket + 'static,
 {
     println!("Starting packet forwarder:");
     println!("  Input interface: {}", args.in_if);

@@ -3,109 +3,65 @@ use core::cell::UnsafeCell;
 use core::sync::atomic;
 use std::sync::Arc;
 
+use arrayvec::ArrayVec;
 use atomic::{AtomicUsize, Ordering};
 use ringbuf::storage::Heap;
 use ringbuf::traits::Split;
+use ringbuf::wrap::Wrap;
 use ringbuf::{CachingCons, CachingProd, HeapRb, SharedRb};
 
-pub(crate) struct Queue<T>{
-    rb: HeapRb<T>
-}
 
 pub(crate) struct Producer<T> {
     producer: CachingProd<Arc<SharedRb<Heap<T>>>>,
-    id: usize
 }
 
 impl<T> Producer<T> {
-    pub(crate) fn enqueue(&mut self, value: T) -> Result<(), T> {
-        ringbuf::traits::Producer::try_push(&mut self.producer, value)
-    }
-
     pub(crate) fn enqueue_many(&mut self, data: impl Iterator<Item = T>) -> usize {
         ringbuf::traits::Producer::push_iter(&mut self.producer, data)
     }
 
     pub(crate) fn id(&self) -> usize {
-        self.id
+        Arc::as_ptr(&self.producer.rb_ref()) as usize
     }
 
     pub(crate) fn new(producer: CachingProd<Arc<SharedRb<Heap<T>>>>, id: usize) -> Self {
-        Self {
-            producer,
-            id
-        }
+        Self { producer }
     }
-
 }
 
 pub(crate) struct Consumer<T> {
     // we have to promise that the consumer is only used by one thread
-    consumer: UnsafeCell<CachingCons<Arc<SharedRb<Heap<T>>>>>,
-    id: usize
+    pub consumer: UnsafeCell<CachingCons<Arc<SharedRb<Heap<T>>>>>,
 }
 
 impl<T> Consumer<T> {
     // # Safety
     // Exclusive access must be enforced by the caller
-    pub unsafe fn dequeue_many(&self, data: &mut Vec<T>) {
+    #[inline(always)]
+    pub unsafe fn dequeue_many<const N: usize>(&self, data: &mut ArrayVec<T, { N }>) {
         let consumer = unsafe { &mut *self.consumer.get() };
-        for scan in ringbuf::traits::Consumer::pop_iter(consumer) {
-            data.push(scan);
+        let remaining = data.capacity() - data.len();
+        for scan in ringbuf::traits::Consumer::pop_iter(consumer).take(remaining) {
+            unsafe { data.push_unchecked(scan) };
         }
     }
 
-    pub(crate) fn id(&self) -> usize {
-        self.id
+    pub(crate) unsafe fn id(&self) -> usize {
+        let tmp = unsafe { (*self.consumer.get()).rb_ref() };
+        Arc::as_ptr(tmp) as usize
     }
 
     pub(crate) fn new(consumer: CachingCons<Arc<SharedRb<Heap<T>>>>, id: usize) -> Self {
         Self {
             consumer: UnsafeCell::new(consumer),
-            id
         }
     }
 }
 
-
-
-
-
-impl<T> Queue<T> {
-    pub(crate) fn new(capacity: usize) -> Self {
-        Self {
-            rb: HeapRb::new(capacity)
-        }
-    }
-
-    pub(crate) fn split(self) -> (Producer<T>, Consumer<T>) {
-        static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let (producer, consumer) = self.rb.split();
-        (
-            Producer::new(producer, id),
-            Consumer::new(consumer, id)
-        ) 
-
-        //(Producer { rb: producer }, Consumer { rb: consumer })
-    }
-
+pub(crate) fn channel<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
+    let rb = HeapRb::new(capacity);
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let (producer, consumer) = rb.split();
+    (Producer::new(producer, id), Consumer::new(consumer, id))
 }
-
-
-
-//pub(crate) trait Idable {
-//    fn id(&self) -> usize;
-//}
-//
-//impl<T> Idable for Producer<T> {
-//    fn id(&self) -> usize {
-//        self.id
-//    }
-//}
-//
-//impl<T> Idable for Consumer<T> {
-//    fn id(&self) -> usize {
-//        self.id
-//    }
-//}

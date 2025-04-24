@@ -1,32 +1,17 @@
 mod wrapper;
-use crate::api::{self, BufferConsumer, BufferProducer, Payload};
-use anyhow::{Result, bail};
+use crate::api;
+use crate::api::Result;
+use crate::errors::Error;
 use libc::{self, _SC_PAGESIZE, sysconf};
-use libxdp_sys::XSK_UMEM__DEFAULT_FRAME_SIZE;
 use std::alloc::{self, Layout};
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::ffi::CString;
-use std::io::{self, Error, ErrorKind};
+use std::io::{self, ErrorKind};
 use std::mem::ManuallyDrop;
-use std::ops::{Deref, DerefMut};
-use std::os::raw::c_int;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-//use api::ContextExt;
+use std::sync::atomic::{AtomicU32, Ordering};
 use wrapper::{TxSlot, Umem, XdpDescData, XskSocket};
-
-// Constants from the C code
-//const NUM_FRAMES: u32 = 4096;
-//const FRAME_SIZE: u32 = XSK_UMEM__DEFAULT_FRAME_SIZE; // taken from libxdp binding
-const RX_BATCH_SIZE: u32 = 64;
-
-// Global variables (unsafe globals in Rust, used only during startup)
-static mut CUSTOM_XSK: bool = false;
-static mut XSK_MAP_FD: c_int = -1;
-
-//
-// Data structures
-//
+const RX_BATCH_SIZE: usize = 32;
 
 pub fn resultify(x: i32) -> io::Result<u32> {
     match x >= 0 {
@@ -36,19 +21,16 @@ pub fn resultify(x: i32) -> io::Result<u32> {
 }
 
 #[derive(Clone)]
-pub struct Ctx<S: api::Strategy> {
+pub struct Ctx {
     buffer: UmemArea,
-    producer: RefCell<S::Producer>,
-    index: usize,
+    producer: RefCell<mpsc::Producer<api::BufferRef>>,
+    index: u32,
 }
 
-//impl<S: api::Strategy> ContextExt for Ctx<S> {}
-
-impl<S: api::Strategy> Ctx<S> {
-    fn new(nbufs: usize, buffer_pool: UmemArea, args: api::StrategyArgs) -> (Self, S::Consumer) {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let (producer, cons) = S::create(nbufs, args);
-        // mpsc::channel::<api::BufferIndex>(buffer_pool.size as usize);
+impl Ctx {
+    fn new(nbufs: usize, buffer_pool: UmemArea) -> (Self, mpsc::Consumer<api::BufferRef>) {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let (producer, cons) = mpsc::channel(nbufs);
         let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
         let res = Self {
             buffer: buffer_pool, //: Arc::new(buffer_pool),
@@ -58,7 +40,7 @@ impl<S: api::Strategy> Ctx<S> {
         (res, cons)
     }
 
-    unsafe fn buffer(&self, idx: api::BufferIndex, size: usize) -> *mut [u8] {
+    unsafe fn buffer(&self, idx: api::BufferRef, size: usize) -> *mut [u8] {
         let (ptr, _) = self.buffer.raw_parts();
         let offset = usize::from(idx) as usize;
         unsafe {
@@ -66,24 +48,20 @@ impl<S: api::Strategy> Ctx<S> {
             std::slice::from_raw_parts_mut(start, size)
         }
     }
-
-    fn release(&self, idx: api::BufferIndex) {
-        self.producer.borrow_mut().push(idx);
-    }
 }
 
-impl<S: api::Strategy> api::Context for Ctx<S> {
-    type Token = Tok<S>;
+impl api::Context for Ctx {
+    type Token = Tok;
 
-    fn release(&self, buf_idx: api::BufferIndex) {
+    fn release(&self, buf_idx: api::BufferRef) {
         self.producer.borrow_mut().push(buf_idx);
     }
 
-    unsafe fn unsafe_buffer(&self, buf_idx: api::BufferIndex, size: usize) -> *mut [u8] {
+    unsafe fn unsafe_buffer(&self, buf_idx: api::BufferRef, size: usize) -> *mut [u8] {
         unsafe { self.buffer(buf_idx, size) }
     }
 
-    fn pool_id(&self) -> usize {
+    fn pool_id(&self) -> u32 {
         self.index
     }
 }
@@ -106,7 +84,7 @@ pub struct UmemArea {
 unsafe impl Send for UmemArea {}
 
 impl UmemArea {
-    fn new(packet_buffer_size: usize) -> Result<UmemArea, anyhow::Error> {
+    fn new(packet_buffer_size: usize) -> Result<UmemArea> {
         let packet_buffer = alloc_page_aligned(packet_buffer_size)?;
 
         let mem = Arc::new(UnsafeCell::new(packet_buffer));
@@ -124,15 +102,18 @@ impl UmemArea {
 
 /// Wraps the XDP UMEM info.
 /// Now handles fill/completion ring and frame addresses internally.
-struct UmemManager<S: api::Strategy> {
+struct UmemManager {
     umem: Umem,
-    consumer: S::Consumer,
+    consumer: mpsc::Consumer<api::BufferRef>,
 }
 
-impl<S: api::Strategy> UmemManager<S> {
-    pub fn create_with_buffer(umem: UmemArea, consumer: S::Consumer) -> Result<Self> {
+impl UmemManager {
+    pub fn create_with_buffer(
+        umem: UmemArea,
+        consumer: mpsc::Consumer<api::BufferRef>,
+    ) -> Result<Self> {
         Ok(Self {
-            umem: Umem::new(umem)?,
+            umem: Umem::new(umem).map_err(|err| Error::Generic(err))?,
             consumer,
         })
     }
@@ -183,7 +164,7 @@ impl<S: api::Strategy> UmemManager<S> {
     }
 } //
 
-fn complete_tx<S: api::Strategy>(xsk: &Sock<S>) -> io::Result<()> {
+fn complete_tx(xsk: &Sock) -> io::Result<()> {
     let umem = &mut xsk.umem_manager.borrow_mut().umem;
     let (completed, mut idx) = umem.ring_cons_mut().peek(64);
     if completed == 0 {
@@ -197,7 +178,7 @@ fn complete_tx<S: api::Strategy>(xsk: &Sock<S>) -> io::Result<()> {
         xsk.ctx
             .producer
             .borrow_mut()
-            .push(api::BufferIndex::from(addr as usize));
+            .push(api::BufferRef::from(addr as usize));
     }
     umem.ring_cons_mut().release(completed);
     xsk.ctx.producer.borrow_mut().flush();
@@ -205,57 +186,38 @@ fn complete_tx<S: api::Strategy>(xsk: &Sock<S>) -> io::Result<()> {
     Ok(())
 }
 
-pub struct Tok<S: api::Strategy> {
-    idx: api::BufferIndex,
+pub struct Tok {
+    idx: api::BufferRef,
     len: u32,
-    buffer_pool: usize,
-    _marker: std::marker::PhantomData<S>,
+    buffer_pool: u32,
 }
 
-impl<S: api::Strategy> api::Token for Tok<S> {
-    type Context = Ctx<S>;
+impl api::Token for Tok {
+    type Context = Ctx;
 
-    fn buffer_idx(&self) -> api::BufferIndex {
+    fn buffer_idx(&self) -> api::BufferRef {
         self.idx
     }
 
-    fn size(&self) -> usize {
-        self.len as usize
+    fn size(&self) -> u32 {
+        self.len
     }
 
-    fn pool_id(&self) -> usize {
+    fn pool_id(&self) -> u32 {
         self.buffer_pool
     }
 }
 
-//impl<S: api::Strategy> api::TokenExt for Tok<S> {
-//    fn duplicate(&self) -> Self {
-//        Tok {
-//            idx: self.idx,
-//            len: self.len,
-//            buffer_pool: self.buffer_pool,
-//            _marker: std::marker::PhantomData,
-//        }
-//    }
-//}
-
-impl<S: api::Strategy> Tok<S> {
-    fn new(idx: u64, buffer_pool: usize, len: u32) -> ManuallyDrop<Self> {
+impl Tok {
+    fn new(idx: u64, buffer_pool: u32, len: u32) -> ManuallyDrop<Self> {
         let idx: usize = idx.try_into().unwrap();
-        let idx = api::BufferIndex::from(idx);
+        let idx = api::BufferRef::from(idx);
         ManuallyDrop::new(Self {
             idx,
             len,
             buffer_pool,
-            _marker: std::marker::PhantomData,
         })
     }
-}
-
-struct Port {
-    pub ifname: String,
-    pub ifindex: u32,
-    pub queue_id: u32,
 }
 
 fn ifname_to_ifindex(ifname: &str) -> Option<u32> {
@@ -264,37 +226,19 @@ fn ifname_to_ifindex(ifname: &str) -> Option<u32> {
     if index == 0 { None } else { Some(index) }
 }
 
-impl Port {
-    fn parse(portspec: &str) -> Result<Self> {
-        let parts: Vec<&str> = portspec.split(':').collect();
-        if parts.len() != 2 {
-            return Err(anyhow::anyhow!("Invalid port spec"));
-        }
-        let ifname = parts[0].to_string();
-        let queue_id = parts[1].parse()?;
-        let ifindex =
-            ifname_to_ifindex(&ifname).ok_or_else(|| anyhow::anyhow!("Invalid ifname"))?;
-        Ok(Self {
-            ifname,
-            ifindex,
-            queue_id,
-        })
-    }
-}
-
 /// Wraps an AF_XDP socket.
-pub struct Sock<S: api::Strategy> {
-    ctx: Ctx<S>,
+pub struct Sock {
+    ctx: Ctx,
     xsk: RefCell<XskSocket>,
     outstanding_tx: u32,
-    umem_manager: RefCell<UmemManager<S>>,
+    umem_manager: RefCell<UmemManager>,
     stats: Cell<StatsRecord>,
     prev_stats: Cell<StatsRecord>,
 }
 
-impl<S: api::Strategy> Sock<S> {
+impl Sock {
     #[inline(always)]
-    fn recv_inner(&self, slot: XdpDescData) -> Result<(Tok<S>, Meta)> {
+    fn recv_inner(&self, slot: XdpDescData) -> Result<(Tok, Meta)> {
         let offset = slot.offset;
         let len = slot.len;
         let options = slot.options;
@@ -321,7 +265,7 @@ impl<S: api::Strategy> Sock<S> {
         *slot.len_mut() = payload.len() as u32;
 
         // Actually copy the packet into UMEM
-        let buffer_index = api::BufferIndex::from(frame_addr as usize);
+        let buffer_index = api::BufferRef::from(frame_addr as usize);
         let buf = unsafe { self.ctx.buffer(buffer_index, payload.len()) };
 
         unsafe {
@@ -386,13 +330,11 @@ impl<S: api::Strategy> Sock<S> {
     }
 }
 
-impl<S: api::Strategy> api::Socket<S> for Sock<S> {
-    type Context = Ctx<S>;
+impl api::Socket for Sock {
+    type Context = Ctx;
     type Metadata = Meta;
-
-    fn recv_token(
-        &mut self,
-    ) -> anyhow::Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
+    type Flags = AfXdpFlags;
+    fn recv_token(&mut self) -> Result<(<Self::Context as api::Context>::Token, Self::Metadata)> {
         let mut rx = self.xsk.borrow_mut();
         if let Some(slot) = rx.rx_mut().next() {
             self.recv_inner(slot)
@@ -401,12 +343,12 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             let tmp = rx
                 .rx_mut()
                 .next()
-                .ok_or_else(|| anyhow::anyhow!("No packets"))?;
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No packets"))?;
             self.recv_inner(tmp)
         }
     }
 
-    fn send(&mut self, packet: &[u8]) -> anyhow::Result<()> {
+    fn send(&mut self, packet: &[u8]) -> Result<()> {
         if let Some(slot) = self.xsk.borrow_mut().tx_mut().iter().next() {
             self.send_inner(slot, packet)?
         } else {
@@ -414,7 +356,7 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
             if let Some(slot) = self.xsk.borrow_mut().tx_mut().iter().next() {
                 self.send_inner(slot, packet)?
             } else {
-                bail!("No inbound packets");
+                return Err(Error::NoMemory);
             }
         }
         Ok(())
@@ -438,45 +380,36 @@ impl<S: api::Strategy> api::Socket<S> for Sock<S> {
         };
     }
 
-    fn create(
-        portspec: &str,
-        queue: Option<usize>,
-        //      filter: Option<()>,
-        flags: api::Flags,
-    ) -> anyhow::Result<Self> {
-        let flags = match flags {
-            api::Flags::AfXdp(flags) => flags,
-            _ => panic!("Invalid flags"),
-        };
+    fn create(portspec: &str, queue: Option<usize>, flags: Self::Flags) -> Result<Self> {
         let xdp_flags = flags.xdp_flags;
         let bind_flags = flags.bind_flags;
         let num_frames = flags.num_frames;
         let frame_size = flags.frame_size;
         let umem_bytes_len = (num_frames * frame_size) as usize;
         let umem = UmemArea::new(umem_bytes_len as usize)?;
-        let (ctx, consumer) = Ctx::new(num_frames as usize, umem.clone(), flags.strategy_args);
+        let (ctx, consumer) = Ctx::new(num_frames as usize, umem.clone());
 
         for i in 0..num_frames {
-            let prod: &mut <S as api::Strategy>::Producer = &mut *ctx.producer.borrow_mut();
-            prod.push(api::BufferIndex::from((i as usize) * frame_size as usize));
+            let prod = &mut *ctx.producer.borrow_mut();
+            prod.push(api::BufferRef::from((i as usize) * frame_size as usize));
         }
         {
-            let prod: &mut <S as api::Strategy>::Producer = &mut *ctx.producer.borrow_mut();
+            let prod = &mut *ctx.producer.borrow_mut();
             prod.flush();
         }
         let mut umem_manager = UmemManager::create_with_buffer(umem.clone(), consumer)?;
 
-        // let port = Port::parse(portspec)?;
-
         let socket = unsafe {
             XskSocket::create(
-                &umem_manager.umem,
+                &mut umem_manager.umem,
                 portspec,
                 queue.unwrap_or(0) as u32,
                 xdp_flags,
                 bind_flags,
             )?
         };
+
+        let ifindex = ifname_to_ifindex(&portspec).unwrap();
 
         umem_manager.refill_fill_ring()?;
         Ok(Self {
@@ -500,8 +433,9 @@ pub struct AfXdpFlags {
     pub xdp_flags: u32,
     pub num_frames: u32,
     pub frame_size: u32,
-    pub strategy_args: api::StrategyArgs,
 }
+
+impl api::Flags for AfXdpFlags {}
 
 /// Get the current time in nanoseconds (monotonic clock).
 fn gettime() -> u64 {
@@ -519,23 +453,23 @@ fn gettime() -> u64 {
 
 pub fn alloc_page_aligned(size: usize) -> io::Result<*mut u8> {
     if size == 0 {
-        return Err(Error::new(ErrorKind::InvalidInput, "Invalid size"));
+        return Err(io::Error::new(ErrorKind::InvalidInput, "Invalid size"));
     }
     let page_size = unsafe { sysconf(_SC_PAGESIZE) };
     if page_size < 0 {
-        return Err(Error::last_os_error());
+        return Err(io::Error::last_os_error());
     }
     let page_size = page_size as usize;
 
     let layout = Layout::from_size_align(size, page_size)
-        .map_err(|_| Error::new(ErrorKind::InvalidInput, "Invalid layout"))?;
+        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "Invalid layout"))?;
 
     // Allocate the memory.
     let ptr = unsafe { alloc::alloc(layout) };
 
     // Check for allocation failure (ptr::null_mut on OOM).
     if ptr.is_null() {
-        Err(Error::new(
+        Err(io::Error::new(
             ErrorKind::Other,
             "Allocation with page alignment failed",
         ))
@@ -550,39 +484,34 @@ impl api::Metadata for Meta {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        api::{Flags, Socket},
-        strategy::{MpscArgs, MpscStrategy},
-    };
+    use libxdp_sys::XSK_UMEM__DEFAULT_FRAME_SIZE;
+
+    use crate::api::Socket;
 
     use super::*;
 
     #[test]
     fn test_send_with_flush() {
-        let mut socket0 = Sock::<MpscStrategy>::create(
+        let mut socket0 = Sock::create(
             "veth0af_xdp",
             Some(0),
-            //     None,
-            Flags::AfXdp(AfXdpFlags {
+            AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
                 frame_size: XSK_UMEM__DEFAULT_FRAME_SIZE,
-                num_frames: 4096,
-                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
-            }),
+                num_frames: 4096 * 8,
+            },
         )
         .unwrap();
-        let mut socket1 = Sock::<MpscStrategy>::create(
+        let mut socket1 = Sock::create(
             "veth1af_xdp",
             Some(0),
-            //       None,
-            Flags::AfXdp(AfXdpFlags {
+            AfXdpFlags {
                 xdp_flags: 0,
                 bind_flags: 0,
                 frame_size: XSK_UMEM__DEFAULT_FRAME_SIZE,
                 num_frames: 4096,
-                strategy_args: api::StrategyArgs::Mpsc(MpscArgs::default()),
-            }),
+            },
         )
         .unwrap();
         socket1.send(b"Helloworldmyfriend\0\0\0\0\0\0\0").unwrap();

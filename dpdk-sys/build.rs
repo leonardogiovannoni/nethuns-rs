@@ -57,7 +57,7 @@ fn main() {
     println!("cargo:rustc-link-lib=rte_bus_vdev");
 
     build.flag("-mssse3");
-
+    build.flag("-O3");
     //build.flag("-lrte_bus_vdev");
     // Compile lib.c into a static library (e.g., liblib.a).
     build.compile("lib");

@@ -1,3 +1,5 @@
+use crate::api::{Context, Socket, Token};
+use crate::{af_xdp, netmap};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::sync::{
@@ -7,21 +9,7 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
-// Import the framework APIs.
-use crate::{
-    af_xdp,
-    api::{Flags, Socket, StrategyArgs},
-    netmap,
-};
-use crate::{
-    api::{Context, Token},
-    strategy::{MpscArgs, MpscStrategy},
-};
-
-use ringbuf::{
-    traits::{Consumer, Producer, Split},
-};
-// Use Crossbeam's ArrayQueue for the SPSC queue (add crossbeam-queue to Cargo.toml).
+use ringbuf::traits::{Consumer, Producer, Split};
 
 /// Command-line arguments.
 #[derive(Parser, Debug)]
@@ -83,9 +71,9 @@ struct Packet<Ctx: Context> {
 
 /// Generic function that sets up the SPSC queue, spawns meter and consumer threads,
 /// and then runs the producer loop.
-fn run_queue<Sock>(flags: Flags, args: &Args, term: Arc<AtomicBool>) -> Result<()>
+fn run_queue<Sock>(flags: Sock::Flags, args: &Args, term: Arc<AtomicBool>) -> Result<()>
 where
-    Sock: Socket<MpscStrategy> + 'static,
+    Sock: Socket + 'static,
 {
     // Create a SPSC queue with capacity for 65,536 packets.
     // let queue = Arc::new(ArrayQueue::<Packet<_>>::new(65_536));
@@ -172,27 +160,19 @@ pub(crate) fn routine() -> Result<()> {
     // Choose the proper framework and call the generic run_queue function.
     match &args.framework {
         Framework::Netmap(netmap_args) => {
-            let flags = Flags::Netmap(netmap::NetmapFlags {
+            let flags = netmap::NetmapFlags {
                 extra_buf: netmap_args.extra_buf,
-                strategy_args: StrategyArgs::Mpsc(MpscArgs {
-                    consumer_buffer_size: netmap_args.consumer_buffer_size,
-                    producer_buffer_size: netmap_args.producer_buffer_size,
-                }),
-            });
-            run_queue::<netmap::Sock<MpscStrategy>>(flags, &args, term)?;
+            };
+            run_queue::<netmap::Sock>(flags, &args, term)?;
         }
         Framework::AfXdp(af_xdp_args) => {
-            let flags = Flags::AfXdp(af_xdp::AfXdpFlags {
+            let flags = af_xdp::AfXdpFlags {
                 bind_flags: af_xdp_args.bind_flags,
                 xdp_flags: af_xdp_args.xdp_flags,
-                strategy_args: StrategyArgs::Mpsc(MpscArgs {
-                    consumer_buffer_size: 256,
-                    producer_buffer_size: 256,
-                }),
                 num_frames: 4096,
                 frame_size: 2048,
-            });
-            run_queue::<af_xdp::Sock<MpscStrategy>>(flags, &args, term)?;
+            };
+            run_queue::<af_xdp::Sock>(flags, &args, term)?;
         }
     }
 
