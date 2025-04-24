@@ -14,7 +14,7 @@ netmap-rs = { path = "netmap_rs" }
 #netmap-sys = { path = "../netmap-rs/netmap-sys" }
 nix = "0.29.0"
 num_cpus = "1.16.0"
-mpsc = { path = "mpsc2" }
+mpsc = { path = "mpsc" }
 libxdp-sys = "0.2.1"
 ringbuf = "0.4.7"
 dpdk-sys = { path = "dpdk-sys" }

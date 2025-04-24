@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-arrayvec = { path = "arrayvec" }
+#arrayvec = "0.7.6"
+arrayvec = {path = "arrayvec"}
 crossbeam-utils = "0.8.21"
 kanal = "0.1.1"
 num_cpus = "1.16.0"

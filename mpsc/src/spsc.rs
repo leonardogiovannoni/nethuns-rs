@@ -31,7 +31,7 @@ impl<T> Producer<T> {
 
 pub(crate) struct Consumer<T> {
     // we have to promise that the consumer is only used by one thread
-    pub consumer: UnsafeCell<CachingCons<Arc<SharedRb<Heap<T>>>>>,
+    pub(crate) consumer: UnsafeCell<CachingCons<Arc<SharedRb<Heap<T>>>>>,
 }
 
 impl<T> Consumer<T> {

@@ -1,4 +1,5 @@
-use ringbuf::traits::Consumer;
+use std::simd::{usizex16, usizex4, usizex8};
+
 use triomphe::Arc;
 
 use arrayvec::ArrayVec;
@@ -20,7 +21,7 @@ impl<T> Clone for ConsumerList<T> {
     }
 }
 
-impl<T: Copy> ConsumerList<T> {
+impl<T> ConsumerList<T> {
     pub(crate) fn new(queue_len: usize) -> Self {
         Self {
             list: Arc::new(Mutex::new(ArrayVec::new())),
@@ -36,7 +37,7 @@ impl<T: Copy> ConsumerList<T> {
         let mut list = self.list.lock();
         let len = list.len();
         // We have exclusive access to the list, so we can safely remove the consumer
-        unsafe {
+        unsafe { 
             list.retain(|x| x.id() != id);
         }
         assert!(list.len() == len - 1);
@@ -50,20 +51,24 @@ impl<T: Copy> ConsumerList<T> {
         }
     }
 
-    #[inline(never)]
-    #[cold]
-    pub(crate) fn pop_all<const N: usize>(&mut self, v: &mut ArrayVec<T, { N } >) {
+}
 
 
 
-        self.for_each(|consumer| unsafe {
-            // consumer.dequeue_many(v);
-            let mut c = unsafe { &mut *consumer.consumer.get() };
-            let (lower, upper) = c.iter().size_hint();
-            let tmp = std::cmp::min(v.capacity(), lower);
-            v.set_len(tmp);
-            c.pop_slice(v.as_mut_slice());
-            // let tmp = v.set_len(length);
-        });
-    }
+#[inline(never)]
+#[cold]
+pub fn pop_all<const N: usize>(me: &mut ConsumerList<usizex16>, v: &mut ArrayVec<usize, { N }>) {
+    me.for_each(|consumer| {
+        let consumer = unsafe { &mut *consumer.consumer.get() };
+        let remaining = (v.capacity() - v.len()) / 16;
+        for scan in ringbuf::traits::Consumer::pop_iter(consumer).take(remaining) {
+            unsafe {
+                let len = v.len();
+                let ptr = v.as_mut_ptr().add(len);
+                let ptr = ptr as *mut usizex16;
+                std::ptr::write(ptr, scan);
+                v.set_len(len + 16);
+            }
+        }
+    });
 }
