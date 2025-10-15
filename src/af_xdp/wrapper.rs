@@ -1,181 +1,30 @@
-use crate::af_xdp::{RX_BATCH_SIZE, UmemArea, resultify};
+use crate::af_xdp::{resultify, UmemArea, RX_BATCH_SIZE};
 use arrayvec::ArrayVec;
-use libc::strerror;
+use aya::maps::Map;
+use aya::programs::xdp::XdpLinkId;
+use aya::programs::{Xdp, XdpFlags};
+use aya::{include_bytes_aligned, Ebpf};
 use libxdp_sys::{
-    XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD, XSK_RING_CONS__DEFAULT_NUM_DESCS,
-    XSK_RING_PROD__DEFAULT_NUM_DESCS, XSK_UMEM__DEFAULT_FRAME_SIZE, bpf_map__fd,
-    bpf_object__find_map_by_name,
-    bpf_object_open_opts, libxdp_get_error, xdp_desc,
-    xdp_multiprog, xdp_multiprog__close, xdp_multiprog__detach, xdp_multiprog__get_from_ifindex,
-    xdp_program__attach, xdp_program__bpf_obj, xdp_program__open_file,
-    xdp_program_opts, xsk_prod_nb_free, xsk_ring_cons, xsk_ring_cons__comp_addr,
-    xsk_ring_cons__peek, xsk_ring_cons__release, xsk_ring_cons__rx_desc, xsk_ring_prod,
-    xsk_ring_prod__fill_addr, xsk_ring_prod__reserve, xsk_ring_prod__submit,
-    xsk_ring_prod__tx_desc, xsk_socket, xsk_socket__create, xsk_socket__delete, xsk_socket__fd,
-    xsk_socket__update_xskmap, xsk_socket_config, xsk_umem, xsk_umem__create, xsk_umem__delete,
-};
-use std::mem::size_of;
-use std::{
-    collections::VecDeque,
-    ffi::{CString, c_void},
-    mem::zeroed,
-    ptr,
-    str::FromStr,
+    xdp_desc, xsk_prod_nb_free, xsk_ring_cons, xsk_ring_cons__comp_addr, xsk_ring_cons__peek,
+    xsk_ring_cons__release, xsk_ring_cons__rx_desc, xsk_ring_prod, xsk_ring_prod__fill_addr,
+    xsk_ring_prod__reserve, xsk_ring_prod__submit, xsk_ring_prod__tx_desc, xsk_socket,
+    xsk_socket__create, xsk_socket__delete, xsk_socket__fd, xsk_socket__update_xskmap,
+    xsk_socket_config, xsk_umem, xsk_umem__create, xsk_umem__delete,
+    XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD,
 };
 use std::io;
+use std::os::fd::{AsFd, AsRawFd};
+use std::ptr::NonNull;
+use std::{
+    collections::VecDeque,
+    ffi::CString,
+    mem::zeroed,
+    ptr,
+};
 
-//
-// -------------------------------------------------------------------------
-// Constants matching the C code
-// -------------------------------------------------------------------------
-const NUM_FRAMES: usize = 4096;
-const FRAME_SIZE: usize = XSK_UMEM__DEFAULT_FRAME_SIZE as usize;
-//const RX_BATCH_SIZE: u32      = 64;
-const INVALID_UMEM_FRAME: u64 = u64::MAX;
-
-fn xsk_configure_socket(
-    umem_info: &mut Umem,
-    xsk_map_fd: i32,
-    xdp_flags: u32,
-    xsk_bind_flags: u16,
-    ifname: CString,
-    ifindex: i32,
-    xsk_if_queue: u32,
-) -> io::Result<XskSocket> {
-    let mut xsk_cfg: xsk_socket_config = unsafe { std::mem::zeroed() };
-    xsk_cfg.rx_size = XSK_RING_CONS__DEFAULT_NUM_DESCS as u32;
-    xsk_cfg.tx_size = XSK_RING_CONS__DEFAULT_NUM_DESCS as u32;
-    xsk_cfg.xdp_flags = xdp_flags;
-    xsk_cfg.bind_flags = xsk_bind_flags;
-    xsk_cfg.__bindgen_anon_1.libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD;
-    let mut xsk = std::ptr::null_mut();
-    let ifname = ifname.as_ptr();
-    let ifindex = ifindex;
-    let xsk_if_queue = xsk_if_queue;
-    let umem = (*umem_info).inner;
-    let mut rx = unsafe { core::mem::zeroed() };
-    let mut tx = unsafe { core::mem::zeroed() };
-    //let mut prog_id = 0;
-    //println!("ifname: {:?}", ifname);
-    //println!("ifindex: {:?}", ifindex);
-    //println!("xsk_if_queue: {:?}", xsk_if_queue);
-    //println!("umem: {:?}", umem);
-
-    let ret = unsafe {
-        xsk_socket__create(
-            &mut xsk,
-            ifname,
-            xsk_if_queue,
-            umem,
-            &mut rx,
-            &mut tx,
-            &xsk_cfg,
-        )
-    };
-    if ret != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("xsk_socket__create failed: {}", ret),
-        ));
-    }
-
-    //if custom_xsk.load(std::sync::atomic::Ordering::SeqCst) {
-    let ret = unsafe { xsk_socket__update_xskmap(xsk, xsk_map_fd) };
-    if ret != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("xsk_socket__update_xskmap failed: {}", ret),
-        ));
-    }
-    //} else {
-    //    let ret = unsafe { bpf_xdp_query_id(ifindex, xdp_flags as i32, &mut prog_id) };
-    //    if ret != 0 {
-    //        return std::ptr::null_mut();
-    //    }
-    //}
-    let mut umem_frame_addr: [u64; NUM_FRAMES] = [INVALID_UMEM_FRAME; NUM_FRAMES];
-    for i in 0..NUM_FRAMES {
-        umem_frame_addr[i] = i as u64 * FRAME_SIZE as u64;
-    }
-
-    let mut idx = 0;
-    let ret = unsafe {
-        xsk_ring_prod__reserve(
-            &mut (*umem_info).fq,
-            XSK_RING_PROD__DEFAULT_NUM_DESCS,
-            &mut idx,
-        )
-    };
-    if ret != XSK_RING_PROD__DEFAULT_NUM_DESCS {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("xsk_ring_prod__reserve failed: {}", ret),
-        ));
-    }
-
-    let mut xsk_info = XskSocket {
-        rx: RxRing::new(rx),
-        tx: TxRing {
-            tx,
-            cached: VecDeque::with_capacity(RX_BATCH_SIZE as usize),
-            to_flush: 0,
-        },
-        ifindex,
-        inner: xsk,
-    };
-    for i in 0..XSK_RING_PROD__DEFAULT_NUM_DESCS {
-        let mut ring_prod_mut = umem_info.ring_prod_mut();
-        let tmp = ring_prod_mut.get_addr(idx);
-        *tmp = umem_frame_addr[i as usize];
-        idx += 1;
-    }
-    unsafe {
-        xsk_ring_prod__submit(&mut (*umem_info).fq, XSK_RING_PROD__DEFAULT_NUM_DESCS);
-    }
-    Ok(xsk_info)
-}
-
-
-
-struct XdpMultiprog {
-    inner: *mut xdp_multiprog,
-}
-
-impl XdpMultiprog {
-    pub fn new(ifindex: i32) -> io::Result<XdpMultiprog> {
-        let mut mp = unsafe { xdp_multiprog__get_from_ifindex(ifindex) };
-        if mp.is_null() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("xdp_multiprog__get_from_ifindex failed"),
-            ));
-        }
-        Ok(XdpMultiprog { inner: mp })
-    }
-
-    fn detach(&mut self) -> io::Result<()> {
-        resultify(unsafe { xdp_multiprog__detach(self.inner) }).map(|_| ())
-    }
-}
-
-impl Drop for XdpMultiprog {
-    fn drop(&mut self) {
-        unsafe {
-            xdp_multiprog__close(self.inner);
-        }
-    }
-}
-
-fn do_unload(ifindex: i32) -> io::Result<()> {
-    let mut opts: bpf_object_open_opts = unsafe { zeroed() };
-    opts.sz = size_of::<bpf_object_open_opts>();
-    let mut mp = XdpMultiprog::new(ifindex)?;
-    mp.detach()?;
-    Ok(())
-}
 
 pub struct Umem {
-    inner: *mut xsk_umem,
+    inner: NonNull<xsk_umem>,
     fq: xsk_ring_prod,
     cq: xsk_ring_cons,
 }
@@ -184,15 +33,10 @@ unsafe impl Send for Umem {}
 
 pub struct FqMut<'umem> {
     inner: *mut xsk_ring_prod,
-    umem: &'umem mut Umem,
+    _umem: &'umem mut Umem,
 }
 
 impl<'umem> FqMut<'umem> {
-    // pub fn as_raw(&self) -> *mut xsk_ring_prod {
-    //     self.inner
-    // }
-
-    // xsk_prod_nb_free
     pub fn nb_free(&mut self, nb: u32) -> u32 {
         unsafe { xsk_prod_nb_free(self.inner, nb) }
     }
@@ -216,7 +60,7 @@ impl<'umem> FqMut<'umem> {
 
 pub struct CqMut<'umem> {
     inner: *mut xsk_ring_cons,
-    umem: &'umem mut Umem,
+    _umem: &'umem mut Umem,
 }
 
 impl<'umem> CqMut<'umem> {
@@ -246,13 +90,14 @@ impl Umem {
         resultify(unsafe {
             xsk_umem__create(
                 &mut xsk_umem,
-                buffer as *mut c_void,
+                buffer.as_ptr() as *mut _,
                 size as u64,
                 &mut fq,
                 &mut cq,
                 ptr::null_mut(),
             )
         })?;
+        let xsk_umem = NonNull::new(xsk_umem).expect("Failed to create xsk_umem");
         Ok(Umem {
             inner: xsk_umem,
             fq,
@@ -263,26 +108,22 @@ impl Umem {
     pub fn ring_prod_mut(&mut self) -> FqMut<'_> {
         FqMut {
             inner: &mut self.fq,
-            umem: self,
+            _umem: self,
         }
     }
 
     pub fn ring_cons_mut(&mut self) -> CqMut<'_> {
         CqMut {
             inner: &mut self.cq,
-            umem: self,
+            _umem: self,
         }
-    }
-
-    pub fn as_raw(&self) -> *mut xsk_umem {
-        self.inner
     }
 }
 
 impl Drop for Umem {
     fn drop(&mut self) {
         unsafe {
-            xsk_umem__delete(self.inner);
+            xsk_umem__delete(self.inner.as_ptr());
         }
     }
 }
@@ -294,109 +135,91 @@ pub struct XdpDescData {
 }
 
 pub struct XskSocket {
-    inner: *mut xsk_socket,
-    ifindex: i32,
+    inner: NonNull<xsk_socket>,
     rx: RxRing,
     tx: TxRing,
+    _link: XdpLinkId,
+    _bpf: Ebpf,
 }
 
 unsafe impl Send for XskSocket {}
 
-fn ifname_to_ifindex(ifname: &str) -> Option<u32> {
-    let c_ifname = CString::new(ifname).ok()?;
-    let index = unsafe { libc::if_nametoindex(c_ifname.as_ptr()) };
-    if index == 0 { None } else { Some(index) }
-}
+
+static DEFAULT_PROG: &[u8] = include_bytes_aligned!("../../prog.o");
 
 impl XskSocket {
-    pub fn as_raw(&self) -> *mut xsk_socket {
-        self.inner
-    }
-    // # Safety
-    // Umem should be valid for the lifetime of the XskSocket
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn create(
-        umem2: &mut Umem,
+        umem: &mut Umem,
         ifname: &str,
         queue_id: u32,
         xdp_flags: u32,
         bind_flags: u16,
+        rx_size: u32,
+        tx_size: u32,
     ) -> io::Result<Self> {
-        let filename = CString::from_str("prog.o").unwrap();
+        let ifn = CString::new(ifname)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid interface name"))?;
 
-        let mut opts: bpf_object_open_opts = unsafe { core::mem::zeroed() };
-        opts.sz = core::mem::size_of::<bpf_object_open_opts>();
-        let mut xdp_opts: xdp_program_opts = unsafe { core::mem::zeroed() };
-        xdp_opts.sz = core::mem::size_of::<xdp_program_opts>();
-        xdp_opts.open_filename = filename.as_ptr();
-        let prog_name: Option<String> = None;
-        xdp_opts.prog_name = if let Some(prog_name) = prog_name {
-            prog_name.as_ptr() as *const i8
-        } else {
-            std::ptr::null_mut()
+        let mut bpf = Ebpf::load(DEFAULT_PROG)
+            .map_err(|e| io::Error::other(format!("Failed to load BPF object: {e}")))?;
+
+        let prog: &mut Xdp = bpf
+            .program_mut("xdp_sock_prog")
+            .expect("xdp_sock_prog not found in BPF object")
+            .try_into()
+            .expect("xdp_sock_prog is not an Xdp program");
+
+        prog.load()
+            .map_err(|e| io::Error::other(format!("Failed to load XDP program: {e}")))?;
+
+        let link_id = prog
+            .attach(ifname, XdpFlags::from_bits_truncate(xdp_flags))
+            .map_err(|e| io::Error::other(format!("Failed to attach XDP program: {e}")))?;
+
+        let xsks_map = bpf
+            .map_mut("xsks_map")
+            .expect("xsks_map not found in BPF object");
+        let Map::XskMap(xsks_map) = xsks_map else {
+            panic!("xsks_map is not an XskMap");
         };
+        let mut xsk_cfg: xsk_socket_config = unsafe { std::mem::zeroed() };
+        xsk_cfg.rx_size = rx_size;
+        xsk_cfg.tx_size = tx_size;
+        xsk_cfg.xdp_flags = xdp_flags;
+        xsk_cfg.bind_flags = bind_flags;
+        xsk_cfg.__bindgen_anon_1.libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD;
+        let mut xsk = std::ptr::null_mut();
+        let xsk_if_queue = queue_id;
+        let mut rx = unsafe { core::mem::zeroed() };
+        let mut tx = unsafe { core::mem::zeroed() };
 
-        let attach_mode = 0x2;
+        resultify(unsafe {
+            xsk_socket__create(
+                &mut xsk,
+                ifn.as_ptr(),
+                xsk_if_queue,
+                umem.inner.as_ptr(),
+                &mut rx,
+                &mut tx,
+                &xsk_cfg,
+            )
+        })?;
 
-        let ifindex = ifname_to_ifindex(ifname).ok_or(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to get ifindex for {}", ifname),
-        ))?;
-        xdp_opts.opts = &mut opts;
-        //do_unload(ifindex as i32).unwrap();
-        //if unsafe { *conf.progname } != 0 {
-        //    xdp_opts.open_filename = conf.filename;
-        //    xdp_opts.prog_name = conf.progname;
-        //    xdp_opts.opts = &mut opts;
-        //    prog = unsafe { xdp_program__create(&mut xdp_opts) };
-        //} else {
-        let prog =
-            unsafe { xdp_program__open_file(filename.as_ptr(), std::ptr::null_mut(), &mut opts) };
-        // }
-        let err = unsafe { libxdp_get_error(prog as *const c_void) };
-        if err != 0 {
-            //bail!("ERR: loading program: ..");
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("ERR: loading program: {}", err),
-            ));
-        }
-
-        let err = unsafe { xdp_program__attach(prog, ifindex as i32, attach_mode, 0) };
-
-        if err != 0 {
-            let tmp = unsafe { strerror(err) };
-            let tmp = unsafe { std::ffi::CStr::from_ptr(tmp) };
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "Couldn't attach XDP program on iface '?' : {} ({})",
-                    tmp.to_str().unwrap(),
-                    err
-                ),
-            ));
-        }
-
-        let s = CString::from_str("xsks_map").unwrap();
-        let map = unsafe { bpf_object__find_map_by_name(xdp_program__bpf_obj(prog), s.as_ptr()) };
-        let xsk_map_fd = unsafe { bpf_map__fd(map) };
-        if xsk_map_fd < 0 {
-            let tmp = unsafe { strerror(xsk_map_fd) };
-            let tmp = unsafe { std::ffi::CStr::from_ptr(tmp) };
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("ERROR: no xsks map found: {}", tmp.to_str().unwrap()),
-            ));
-        }
-
-        xsk_configure_socket(
-            umem2,
-            xsk_map_fd,
-            0,
-            0,
-            CString::from_str(ifname).unwrap(),
-            ifindex as i32,
-            queue_id,
-        )
+        let xsk = NonNull::new(xsk).expect("Failed to create xsk_socket");
+        let xsk_map_fd = xsks_map.fd().as_fd().as_raw_fd();
+        resultify(unsafe { xsk_socket__update_xskmap(xsk.as_ptr(), xsk_map_fd) })?;
+        Ok(XskSocket {
+            rx: RxRing::new(rx),
+            tx: TxRing {
+                tx,
+                cached: VecDeque::with_capacity(RX_BATCH_SIZE),
+                to_flush: 0,
+            },
+            inner: xsk,
+            _link: link_id,
+            _bpf: bpf,
+        })
     }
 
     pub fn rx_mut(&mut self) -> &mut RxRing {
@@ -408,15 +231,14 @@ impl XskSocket {
     }
 
     pub fn fd(&self) -> i32 {
-        unsafe { xsk_socket__fd(self.inner) }
+        unsafe { xsk_socket__fd(self.inner.as_ptr()) }
     }
 }
 
 impl Drop for XskSocket {
     fn drop(&mut self) {
         unsafe {
-            xsk_socket__delete(self.inner);
-            do_unload(self.ifindex).unwrap();
+            xsk_socket__delete(self.inner.as_ptr());
         }
     }
 }
@@ -442,22 +264,29 @@ impl RxRing {
             let mut idx_rx: u32 = 0;
             let rcvd =
                 unsafe { xsk_ring_cons__peek(&mut self.rx, RX_BATCH_SIZE as u32, &mut idx_rx) };
+
+            // rcvd <= RX_BATCH_SIZE
             if rcvd == 0 {
                 return None;
             }
             for i in (idx_rx..(rcvd + idx_rx)).rev() {
-                let rx_desc = unsafe { xsk_ring_cons__rx_desc(&mut self.rx, i) };
+                let rx_desc = unsafe { xsk_ring_cons__rx_desc(&self.rx, i) };
                 let addr = unsafe { (*rx_desc).addr };
                 let len = unsafe { (*rx_desc).len };
                 let options = unsafe { (*rx_desc).options };
-                self.cached.push(XdpDescData {
-                    offset: addr,
-                    len,
-                    options,
-                });
+                // SAFETY: rcvd <= RX_BATCH_SIZE, cached empty at the start
+                unsafe {
+                    self.cached.push_unchecked(XdpDescData {
+                        offset: addr,
+                        len,
+                        options,
+                    });
+                }
             }
             unsafe { xsk_ring_cons__release(&mut self.rx, rcvd) };
-            Some(self.cached.pop().unwrap())
+            // SAFETY: self.cached is guaranteed to have at least one element here
+            let rv = unsafe { self.cached.pop().unwrap_unchecked() };
+            Some(rv)
         }
     }
 }
@@ -538,6 +367,7 @@ impl<'a> TxRingIter<'a> {
         self.ring.to_flush = 0;
     }
 
+    #[inline(always)]
     fn advance(&mut self) -> Option<TxSlot<'a>> {
         if let Some(desc) = self.ring.cached.pop_front() {
             self.ring.to_flush += 1;

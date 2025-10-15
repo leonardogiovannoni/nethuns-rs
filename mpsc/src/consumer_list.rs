@@ -1,4 +1,4 @@
-use std::simd::{usizex16, usizex4, usizex8};
+use std::simd::usizex16;
 
 use triomphe::Arc;
 

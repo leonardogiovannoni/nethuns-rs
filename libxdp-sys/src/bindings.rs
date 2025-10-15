@@ -172,12 +172,15 @@ pub const BPF_EXIT: u32 = 144;
 pub const BPF_FETCH: u32 = 1;
 pub const BPF_XCHG: u32 = 225;
 pub const BPF_CMPXCHG: u32 = 241;
+pub const BPF_LOAD_ACQ: u32 = 256;
+pub const BPF_STORE_REL: u32 = 272;
 pub const BPF_F_ALLOW_OVERRIDE: u32 = 1;
 pub const BPF_F_ALLOW_MULTI: u32 = 2;
 pub const BPF_F_REPLACE: u32 = 4;
 pub const BPF_F_BEFORE: u32 = 8;
 pub const BPF_F_AFTER: u32 = 16;
 pub const BPF_F_ID: u32 = 32;
+pub const BPF_F_PREORDER: u32 = 64;
 pub const BPF_F_STRICT_ALIGNMENT: u32 = 1;
 pub const BPF_F_ANY_ALIGNMENT: u32 = 2;
 pub const BPF_F_TEST_RND_HI32: u32 = 4;
@@ -241,6 +244,7 @@ pub const XSK_UNALIGNED_BUF_OFFSET_SHIFT: u32 = 48;
 pub const XSK_UNALIGNED_BUF_ADDR_MASK: u64 = 281474976710655;
 pub const XDP_TXMD_FLAGS_TIMESTAMP: u32 = 1;
 pub const XDP_TXMD_FLAGS_CHECKSUM: u32 = 2;
+pub const XDP_TXMD_FLAGS_LAUNCH_TIME: u32 = 4;
 pub const XDP_PKT_CONTD: u32 = 1;
 pub const XDP_TX_METADATA: u32 = 2;
 pub const XSK_RING_CONS__DEFAULT_NUM_DESCS: u32 = 2048;
@@ -1155,6 +1159,7 @@ pub struct bpf_attr__bindgen_ty_8 {
     pub __bindgen_anon_1: bpf_attr__bindgen_ty_8__bindgen_ty_1,
     pub next_id: __u32,
     pub open_flags: __u32,
+    pub fd_by_id_token_fd: __s32,
 }
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1184,13 +1189,15 @@ const _: () = {
 };
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of bpf_attr__bindgen_ty_8"][::std::mem::size_of::<bpf_attr__bindgen_ty_8>() - 12usize];
+    ["Size of bpf_attr__bindgen_ty_8"][::std::mem::size_of::<bpf_attr__bindgen_ty_8>() - 16usize];
     ["Alignment of bpf_attr__bindgen_ty_8"]
         [::std::mem::align_of::<bpf_attr__bindgen_ty_8>() - 4usize];
     ["Offset of field: bpf_attr__bindgen_ty_8::next_id"]
         [::std::mem::offset_of!(bpf_attr__bindgen_ty_8, next_id) - 4usize];
     ["Offset of field: bpf_attr__bindgen_ty_8::open_flags"]
         [::std::mem::offset_of!(bpf_attr__bindgen_ty_8, open_flags) - 8usize];
+    ["Offset of field: bpf_attr__bindgen_ty_8::fd_by_id_token_fd"]
+        [::std::mem::offset_of!(bpf_attr__bindgen_ty_8, fd_by_id_token_fd) - 12usize];
 };
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -2097,6 +2104,7 @@ pub type _bindgen_ty_7 = ::std::os::raw::c_uint;
 pub const BPF_F_PSEUDO_HDR: _bindgen_ty_8 = 16;
 pub const BPF_F_MARK_MANGLED_0: _bindgen_ty_8 = 32;
 pub const BPF_F_MARK_ENFORCE: _bindgen_ty_8 = 64;
+pub const BPF_F_IPV6: _bindgen_ty_8 = 128;
 pub type _bindgen_ty_8 = ::std::os::raw::c_uint;
 pub const BPF_F_TUNINFO_IPV6: _bindgen_ty_9 = 1;
 pub type _bindgen_ty_9 = ::std::os::raw::c_uint;
@@ -3183,13 +3191,14 @@ pub struct bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_
     pub name_len: __u32,
     pub offset: __u32,
     pub cookie: __u64,
+    pub ref_ctr_offset: __u64,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
     ["Size of bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1"]
         [::std::mem::size_of::<
             bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1,
-        >() - 24usize];
+        >() - 32usize];
     ["Alignment of bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1"]
         [::std::mem::align_of::<
             bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1,
@@ -3198,6 +3207,7 @@ const _: () = {
     ["Offset of field: bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1::name_len"] [:: std :: mem :: offset_of ! (bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1 , name_len) - 8usize] ;
     ["Offset of field: bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1::offset"] [:: std :: mem :: offset_of ! (bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1 , offset) - 12usize] ;
     ["Offset of field: bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1::cookie"] [:: std :: mem :: offset_of ! (bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1 , cookie) - 16usize] ;
+    ["Offset of field: bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1::ref_ctr_offset"] [:: std :: mem :: offset_of ! (bpf_link_info__bindgen_ty_1__bindgen_ty_11__bindgen_ty_1__bindgen_ty_1 , ref_ctr_offset) - 24usize] ;
 };
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -3707,43 +3717,48 @@ pub const BPF_SOCK_OPS_PARSE_UNKNOWN_HDR_OPT_CB_FLAG: _bindgen_ty_28 = 32;
 pub const BPF_SOCK_OPS_WRITE_HDR_OPT_CB_FLAG: _bindgen_ty_28 = 64;
 pub const BPF_SOCK_OPS_ALL_CB_FLAGS: _bindgen_ty_28 = 127;
 pub type _bindgen_ty_28 = ::std::os::raw::c_uint;
-pub const BPF_SOCK_OPS_VOID: _bindgen_ty_29 = 0;
-pub const BPF_SOCK_OPS_TIMEOUT_INIT: _bindgen_ty_29 = 1;
-pub const BPF_SOCK_OPS_RWND_INIT: _bindgen_ty_29 = 2;
-pub const BPF_SOCK_OPS_TCP_CONNECT_CB: _bindgen_ty_29 = 3;
-pub const BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB: _bindgen_ty_29 = 4;
-pub const BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB: _bindgen_ty_29 = 5;
-pub const BPF_SOCK_OPS_NEEDS_ECN: _bindgen_ty_29 = 6;
-pub const BPF_SOCK_OPS_BASE_RTT: _bindgen_ty_29 = 7;
-pub const BPF_SOCK_OPS_RTO_CB: _bindgen_ty_29 = 8;
-pub const BPF_SOCK_OPS_RETRANS_CB: _bindgen_ty_29 = 9;
-pub const BPF_SOCK_OPS_STATE_CB: _bindgen_ty_29 = 10;
-pub const BPF_SOCK_OPS_TCP_LISTEN_CB: _bindgen_ty_29 = 11;
-pub const BPF_SOCK_OPS_RTT_CB: _bindgen_ty_29 = 12;
-pub const BPF_SOCK_OPS_PARSE_HDR_OPT_CB: _bindgen_ty_29 = 13;
-pub const BPF_SOCK_OPS_HDR_OPT_LEN_CB: _bindgen_ty_29 = 14;
-pub const BPF_SOCK_OPS_WRITE_HDR_OPT_CB: _bindgen_ty_29 = 15;
-pub type _bindgen_ty_29 = ::std::os::raw::c_uint;
-pub const BPF_TCP_ESTABLISHED: _bindgen_ty_30 = 1;
-pub const BPF_TCP_SYN_SENT: _bindgen_ty_30 = 2;
-pub const BPF_TCP_SYN_RECV: _bindgen_ty_30 = 3;
-pub const BPF_TCP_FIN_WAIT1: _bindgen_ty_30 = 4;
-pub const BPF_TCP_FIN_WAIT2: _bindgen_ty_30 = 5;
-pub const BPF_TCP_TIME_WAIT: _bindgen_ty_30 = 6;
-pub const BPF_TCP_CLOSE: _bindgen_ty_30 = 7;
-pub const BPF_TCP_CLOSE_WAIT: _bindgen_ty_30 = 8;
-pub const BPF_TCP_LAST_ACK: _bindgen_ty_30 = 9;
-pub const BPF_TCP_LISTEN: _bindgen_ty_30 = 10;
-pub const BPF_TCP_CLOSING: _bindgen_ty_30 = 11;
-pub const BPF_TCP_NEW_SYN_RECV: _bindgen_ty_30 = 12;
-pub const BPF_TCP_BOUND_INACTIVE: _bindgen_ty_30 = 13;
-pub const BPF_TCP_MAX_STATES: _bindgen_ty_30 = 14;
+pub const BPF_SOCK_OPS_VOID: _bindgen_ty_30 = 0;
+pub const BPF_SOCK_OPS_TIMEOUT_INIT: _bindgen_ty_30 = 1;
+pub const BPF_SOCK_OPS_RWND_INIT: _bindgen_ty_30 = 2;
+pub const BPF_SOCK_OPS_TCP_CONNECT_CB: _bindgen_ty_30 = 3;
+pub const BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB: _bindgen_ty_30 = 4;
+pub const BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB: _bindgen_ty_30 = 5;
+pub const BPF_SOCK_OPS_NEEDS_ECN: _bindgen_ty_30 = 6;
+pub const BPF_SOCK_OPS_BASE_RTT: _bindgen_ty_30 = 7;
+pub const BPF_SOCK_OPS_RTO_CB: _bindgen_ty_30 = 8;
+pub const BPF_SOCK_OPS_RETRANS_CB: _bindgen_ty_30 = 9;
+pub const BPF_SOCK_OPS_STATE_CB: _bindgen_ty_30 = 10;
+pub const BPF_SOCK_OPS_TCP_LISTEN_CB: _bindgen_ty_30 = 11;
+pub const BPF_SOCK_OPS_RTT_CB: _bindgen_ty_30 = 12;
+pub const BPF_SOCK_OPS_PARSE_HDR_OPT_CB: _bindgen_ty_30 = 13;
+pub const BPF_SOCK_OPS_HDR_OPT_LEN_CB: _bindgen_ty_30 = 14;
+pub const BPF_SOCK_OPS_WRITE_HDR_OPT_CB: _bindgen_ty_30 = 15;
+pub const BPF_SOCK_OPS_TSTAMP_SCHED_CB: _bindgen_ty_30 = 16;
+pub const BPF_SOCK_OPS_TSTAMP_SND_SW_CB: _bindgen_ty_30 = 17;
+pub const BPF_SOCK_OPS_TSTAMP_SND_HW_CB: _bindgen_ty_30 = 18;
+pub const BPF_SOCK_OPS_TSTAMP_ACK_CB: _bindgen_ty_30 = 19;
+pub const BPF_SOCK_OPS_TSTAMP_SENDMSG_CB: _bindgen_ty_30 = 20;
 pub type _bindgen_ty_30 = ::std::os::raw::c_uint;
-pub const BPF_LOAD_HDR_OPT_TCP_SYN: _bindgen_ty_32 = 1;
-pub type _bindgen_ty_32 = ::std::os::raw::c_uint;
-pub const BPF_WRITE_HDR_TCP_CURRENT_MSS: _bindgen_ty_33 = 1;
-pub const BPF_WRITE_HDR_TCP_SYNACK_COOKIE: _bindgen_ty_33 = 2;
+pub const BPF_TCP_ESTABLISHED: _bindgen_ty_31 = 1;
+pub const BPF_TCP_SYN_SENT: _bindgen_ty_31 = 2;
+pub const BPF_TCP_SYN_RECV: _bindgen_ty_31 = 3;
+pub const BPF_TCP_FIN_WAIT1: _bindgen_ty_31 = 4;
+pub const BPF_TCP_FIN_WAIT2: _bindgen_ty_31 = 5;
+pub const BPF_TCP_TIME_WAIT: _bindgen_ty_31 = 6;
+pub const BPF_TCP_CLOSE: _bindgen_ty_31 = 7;
+pub const BPF_TCP_CLOSE_WAIT: _bindgen_ty_31 = 8;
+pub const BPF_TCP_LAST_ACK: _bindgen_ty_31 = 9;
+pub const BPF_TCP_LISTEN: _bindgen_ty_31 = 10;
+pub const BPF_TCP_CLOSING: _bindgen_ty_31 = 11;
+pub const BPF_TCP_NEW_SYN_RECV: _bindgen_ty_31 = 12;
+pub const BPF_TCP_BOUND_INACTIVE: _bindgen_ty_31 = 13;
+pub const BPF_TCP_MAX_STATES: _bindgen_ty_31 = 14;
+pub type _bindgen_ty_31 = ::std::os::raw::c_uint;
+pub const BPF_LOAD_HDR_OPT_TCP_SYN: _bindgen_ty_33 = 1;
 pub type _bindgen_ty_33 = ::std::os::raw::c_uint;
+pub const BPF_WRITE_HDR_TCP_CURRENT_MSS: _bindgen_ty_34 = 1;
+pub const BPF_WRITE_HDR_TCP_SYNACK_COOKIE: _bindgen_ty_34 = 2;
+pub type _bindgen_ty_34 = ::std::os::raw::c_uint;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct bpf_perf_event_value {
@@ -3762,13 +3777,13 @@ const _: () = {
     ["Offset of field: bpf_perf_event_value::running"]
         [::std::mem::offset_of!(bpf_perf_event_value, running) - 16usize];
 };
-pub const BPF_DEVCG_ACC_MKNOD: _bindgen_ty_34 = 1;
-pub const BPF_DEVCG_ACC_READ: _bindgen_ty_34 = 2;
-pub const BPF_DEVCG_ACC_WRITE: _bindgen_ty_34 = 4;
-pub type _bindgen_ty_34 = ::std::os::raw::c_uint;
-pub const BPF_DEVCG_DEV_BLOCK: _bindgen_ty_35 = 1;
-pub const BPF_DEVCG_DEV_CHAR: _bindgen_ty_35 = 2;
+pub const BPF_DEVCG_ACC_MKNOD: _bindgen_ty_35 = 1;
+pub const BPF_DEVCG_ACC_READ: _bindgen_ty_35 = 2;
+pub const BPF_DEVCG_ACC_WRITE: _bindgen_ty_35 = 4;
 pub type _bindgen_ty_35 = ::std::os::raw::c_uint;
+pub const BPF_DEVCG_DEV_BLOCK: _bindgen_ty_36 = 1;
+pub const BPF_DEVCG_DEV_CHAR: _bindgen_ty_36 = 2;
+pub type _bindgen_ty_36 = ::std::os::raw::c_uint;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct bpf_cgroup_dev_ctx {
@@ -3800,24 +3815,24 @@ const _: () = {
     ["Offset of field: bpf_raw_tracepoint_args::args"]
         [::std::mem::offset_of!(bpf_raw_tracepoint_args, args) - 0usize];
 };
-pub const BPF_FIB_LOOKUP_DIRECT: _bindgen_ty_36 = 1;
-pub const BPF_FIB_LOOKUP_OUTPUT: _bindgen_ty_36 = 2;
-pub const BPF_FIB_LOOKUP_SKIP_NEIGH: _bindgen_ty_36 = 4;
-pub const BPF_FIB_LOOKUP_TBID: _bindgen_ty_36 = 8;
-pub const BPF_FIB_LOOKUP_SRC: _bindgen_ty_36 = 16;
-pub const BPF_FIB_LOOKUP_MARK: _bindgen_ty_36 = 32;
-pub type _bindgen_ty_36 = ::std::os::raw::c_uint;
-pub const BPF_FIB_LKUP_RET_SUCCESS: _bindgen_ty_37 = 0;
-pub const BPF_FIB_LKUP_RET_BLACKHOLE: _bindgen_ty_37 = 1;
-pub const BPF_FIB_LKUP_RET_UNREACHABLE: _bindgen_ty_37 = 2;
-pub const BPF_FIB_LKUP_RET_PROHIBIT: _bindgen_ty_37 = 3;
-pub const BPF_FIB_LKUP_RET_NOT_FWDED: _bindgen_ty_37 = 4;
-pub const BPF_FIB_LKUP_RET_FWD_DISABLED: _bindgen_ty_37 = 5;
-pub const BPF_FIB_LKUP_RET_UNSUPP_LWT: _bindgen_ty_37 = 6;
-pub const BPF_FIB_LKUP_RET_NO_NEIGH: _bindgen_ty_37 = 7;
-pub const BPF_FIB_LKUP_RET_FRAG_NEEDED: _bindgen_ty_37 = 8;
-pub const BPF_FIB_LKUP_RET_NO_SRC_ADDR: _bindgen_ty_37 = 9;
+pub const BPF_FIB_LOOKUP_DIRECT: _bindgen_ty_37 = 1;
+pub const BPF_FIB_LOOKUP_OUTPUT: _bindgen_ty_37 = 2;
+pub const BPF_FIB_LOOKUP_SKIP_NEIGH: _bindgen_ty_37 = 4;
+pub const BPF_FIB_LOOKUP_TBID: _bindgen_ty_37 = 8;
+pub const BPF_FIB_LOOKUP_SRC: _bindgen_ty_37 = 16;
+pub const BPF_FIB_LOOKUP_MARK: _bindgen_ty_37 = 32;
 pub type _bindgen_ty_37 = ::std::os::raw::c_uint;
+pub const BPF_FIB_LKUP_RET_SUCCESS: _bindgen_ty_38 = 0;
+pub const BPF_FIB_LKUP_RET_BLACKHOLE: _bindgen_ty_38 = 1;
+pub const BPF_FIB_LKUP_RET_UNREACHABLE: _bindgen_ty_38 = 2;
+pub const BPF_FIB_LKUP_RET_PROHIBIT: _bindgen_ty_38 = 3;
+pub const BPF_FIB_LKUP_RET_NOT_FWDED: _bindgen_ty_38 = 4;
+pub const BPF_FIB_LKUP_RET_FWD_DISABLED: _bindgen_ty_38 = 5;
+pub const BPF_FIB_LKUP_RET_UNSUPP_LWT: _bindgen_ty_38 = 6;
+pub const BPF_FIB_LKUP_RET_NO_NEIGH: _bindgen_ty_38 = 7;
+pub const BPF_FIB_LKUP_RET_FRAG_NEEDED: _bindgen_ty_38 = 8;
+pub const BPF_FIB_LKUP_RET_NO_SRC_ADDR: _bindgen_ty_38 = 9;
+pub type _bindgen_ty_38 = ::std::os::raw::c_uint;
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct bpf_fib_lookup {
@@ -4038,10 +4053,10 @@ pub const bpf_task_fd_type_BPF_FD_TYPE_KRETPROBE: bpf_task_fd_type = 3;
 pub const bpf_task_fd_type_BPF_FD_TYPE_UPROBE: bpf_task_fd_type = 4;
 pub const bpf_task_fd_type_BPF_FD_TYPE_URETPROBE: bpf_task_fd_type = 5;
 pub type bpf_task_fd_type = ::std::os::raw::c_uint;
-pub const BPF_FLOW_DISSECTOR_F_PARSE_1ST_FRAG: _bindgen_ty_38 = 1;
-pub const BPF_FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL: _bindgen_ty_38 = 2;
-pub const BPF_FLOW_DISSECTOR_F_STOP_AT_ENCAP: _bindgen_ty_38 = 4;
-pub type _bindgen_ty_38 = ::std::os::raw::c_uint;
+pub const BPF_FLOW_DISSECTOR_F_PARSE_1ST_FRAG: _bindgen_ty_39 = 1;
+pub const BPF_FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL: _bindgen_ty_39 = 2;
+pub const BPF_FLOW_DISSECTOR_F_STOP_AT_ENCAP: _bindgen_ty_39 = 4;
+pub type _bindgen_ty_39 = ::std::os::raw::c_uint;
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct bpf_flow_keys {
@@ -4493,11 +4508,11 @@ const _: () = {
     ["Offset of field: btf_ptr::type_id"][::std::mem::offset_of!(btf_ptr, type_id) - 8usize];
     ["Offset of field: btf_ptr::flags"][::std::mem::offset_of!(btf_ptr, flags) - 12usize];
 };
-pub const BTF_F_COMPACT: _bindgen_ty_39 = 1;
-pub const BTF_F_NONAME: _bindgen_ty_39 = 2;
-pub const BTF_F_PTR_RAW: _bindgen_ty_39 = 4;
-pub const BTF_F_ZERO: _bindgen_ty_39 = 8;
-pub type _bindgen_ty_39 = ::std::os::raw::c_uint;
+pub const BTF_F_COMPACT: _bindgen_ty_40 = 1;
+pub const BTF_F_NONAME: _bindgen_ty_40 = 2;
+pub const BTF_F_PTR_RAW: _bindgen_ty_40 = 4;
+pub const BTF_F_ZERO: _bindgen_ty_40 = 8;
+pub type _bindgen_ty_40 = ::std::os::raw::c_uint;
 pub const bpf_core_relo_kind_BPF_CORE_FIELD_BYTE_OFFSET: bpf_core_relo_kind = 0;
 pub const bpf_core_relo_kind_BPF_CORE_FIELD_BYTE_SIZE: bpf_core_relo_kind = 1;
 pub const bpf_core_relo_kind_BPF_CORE_FIELD_EXISTS: bpf_core_relo_kind = 2;
@@ -4532,9 +4547,9 @@ const _: () = {
         [::std::mem::offset_of!(bpf_core_relo, access_str_off) - 8usize];
     ["Offset of field: bpf_core_relo::kind"][::std::mem::offset_of!(bpf_core_relo, kind) - 12usize];
 };
-pub const BPF_F_TIMER_ABS: _bindgen_ty_40 = 1;
-pub const BPF_F_TIMER_CPU_PIN: _bindgen_ty_40 = 2;
-pub type _bindgen_ty_40 = ::std::os::raw::c_uint;
+pub const BPF_F_TIMER_ABS: _bindgen_ty_41 = 1;
+pub const BPF_F_TIMER_CPU_PIN: _bindgen_ty_41 = 2;
+pub type _bindgen_ty_41 = ::std::os::raw::c_uint;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct bpf_iter_num {
@@ -7542,17 +7557,20 @@ pub union xsk_tx_metadata__bindgen_ty_1 {
 pub struct xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1 {
     pub csum_start: __u16,
     pub csum_offset: __u16,
+    pub launch_time: __u64,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
     ["Size of xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1"]
-        [::std::mem::size_of::<xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1>() - 4usize];
+        [::std::mem::size_of::<xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1>() - 16usize];
     ["Alignment of xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1"]
-        [::std::mem::align_of::<xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1>() - 2usize];
+        [::std::mem::align_of::<xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1>() - 8usize];
     ["Offset of field: xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1::csum_start"]
         [::std::mem::offset_of!(xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1, csum_start) - 0usize];
     ["Offset of field: xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1::csum_offset"]
         [::std::mem::offset_of!(xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1, csum_offset) - 2usize];
+    ["Offset of field: xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1::launch_time"]
+        [::std::mem::offset_of!(xsk_tx_metadata__bindgen_ty_1__bindgen_ty_1, launch_time) - 8usize];
 };
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -7573,7 +7591,7 @@ const _: () = {
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
     ["Size of xsk_tx_metadata__bindgen_ty_1"]
-        [::std::mem::size_of::<xsk_tx_metadata__bindgen_ty_1>() - 8usize];
+        [::std::mem::size_of::<xsk_tx_metadata__bindgen_ty_1>() - 16usize];
     ["Alignment of xsk_tx_metadata__bindgen_ty_1"]
         [::std::mem::align_of::<xsk_tx_metadata__bindgen_ty_1>() - 8usize];
     ["Offset of field: xsk_tx_metadata__bindgen_ty_1::request"]
@@ -7583,7 +7601,7 @@ const _: () = {
 };
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of xsk_tx_metadata"][::std::mem::size_of::<xsk_tx_metadata>() - 16usize];
+    ["Size of xsk_tx_metadata"][::std::mem::size_of::<xsk_tx_metadata>() - 24usize];
     ["Alignment of xsk_tx_metadata"][::std::mem::align_of::<xsk_tx_metadata>() - 8usize];
     ["Offset of field: xsk_tx_metadata::flags"]
         [::std::mem::offset_of!(xsk_tx_metadata, flags) - 0usize];

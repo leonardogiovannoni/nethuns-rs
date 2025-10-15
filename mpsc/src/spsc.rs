@@ -37,14 +37,14 @@ pub(crate) struct Consumer<T> {
 impl<T> Consumer<T> {
     // # Safety
     // Exclusive access must be enforced by the caller
-    #[inline(always)]
-    pub unsafe fn dequeue_many<const N: usize>(&self, data: &mut ArrayVec<T, { N }>) {
-        let consumer = unsafe { &mut *self.consumer.get() };
-        let remaining = data.capacity() - data.len();
-        for scan in ringbuf::traits::Consumer::pop_iter(consumer).take(remaining) {
-            unsafe { data.push_unchecked(scan) };
-        }
-    }
+    // #[inline(always)]
+    // pub unsafe fn dequeue_many<const N: usize>(&self, data: &mut ArrayVec<T, { N }>) {
+    //     let consumer = unsafe { &mut *self.consumer.get() };
+    //     let remaining = data.capacity() - data.len();
+    //     for scan in ringbuf::traits::Consumer::pop_iter(consumer).take(remaining) {
+    //         unsafe { data.push_unchecked(scan) };
+    //     }
+    // }
 
     pub(crate) unsafe fn id(&self) -> usize {
         let tmp = unsafe { (*self.consumer.get()).rb_ref() };

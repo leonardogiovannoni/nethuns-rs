@@ -15,6 +15,8 @@ pub enum Error {
     #[error("{0}")]
     Generic(#[from] io::Error),
     //#[error("{0}")]
+    #[error("{0}")]
+    Pcap(#[from] pcap::Error),
     //Temporary(#[from] anyhow::Error),
     #[error("unknown error")]
     Unknown,

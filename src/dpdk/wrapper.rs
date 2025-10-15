@@ -7,9 +7,7 @@ use rand::RngCore;
 use std::cell::UnsafeCell;
 use std::ffi::CString;
 use std::io;
-use std::io::StderrLock;
 use std::mem;
-use std::os::fd::RawFd;
 use std::os::raw::{c_char, c_int};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
@@ -24,8 +22,8 @@ pub(crate) fn resultify(x: i32) -> io::Result<u32> {
 /// Initializes a port with the given mempool.
 pub(crate) unsafe fn init_port(port: u16, pool: *mut rte_mempool) -> io::Result<()> {
     // Zero-initialize the port configuration.
-    let mut port_conf: rte_eth_conf = unsafe { mem::zeroed() };
-    unsafe { resultify(rte_eth_dev_configure(port, 1, 1, &mut port_conf))? };
+    let port_conf: rte_eth_conf = unsafe { mem::zeroed() };
+    unsafe { resultify(rte_eth_dev_configure(port, 1, 1, &port_conf))? };
 
     unsafe {
         resultify(rte_eth_rx_queue_setup(
@@ -54,73 +52,73 @@ pub(crate) unsafe fn init_port(port: u16, pool: *mut rte_mempool) -> io::Result<
     Ok(())
 }
 
-fn find_port(name: &str) -> Option<u16> {
-    let nb_ports = unsafe { rte_eth_dev_count_avail() };
-    for port_id in 0..nb_ports {
-        let port_name = [0; 256];
-        if unsafe { rte_eth_dev_get_name_by_port(port_id, port_name.as_ptr() as *mut i8) } == 0 {
-            let port_name = unsafe { std::ffi::CStr::from_ptr(port_name.as_ptr() as *const i8) };
-            let mut dev_info: rte_eth_dev_info = unsafe { mem::zeroed() };
-            unsafe { rte_eth_dev_info_get(port_id, &mut dev_info) };
-            if port_name.to_str().unwrap() == name {
-                return Some(port_id);
-            }
-        }
-    }
-    None
-}
-
-struct StderrGuard {
-    saved_fd: RawFd,
-    std_err_lock: StderrLock<'static>,
-}
-
-impl Drop for StderrGuard {
-    fn drop(&mut self) {
-        unsafe {
-            // Restore stderr from the saved file descriptor.
-            libc::dup2(self.saved_fd, libc::STDERR_FILENO);
-            libc::close(self.saved_fd);
-        }
-    }
-}
-
-fn redirect_stderr_to_null() -> io::Result<StderrGuard> {
-    let std_err_lock = std::io::stderr().lock();
-    unsafe {
-        // Save the original stderr file descriptor.
-        let saved_fd = libc::dup(libc::STDERR_FILENO);
-        if saved_fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        // Open /dev/null.
-        let devnull = CString::new("/dev/null").unwrap();
-        let fd_devnull = libc::open(devnull.as_ptr(), libc::O_WRONLY);
-        if fd_devnull < 0 {
-            libc::close(saved_fd);
-            return Err(io::Error::last_os_error());
-        }
-
-        // Redirect stderr to /dev/null.
-        if libc::dup2(fd_devnull, libc::STDERR_FILENO) < 0 {
-            libc::close(saved_fd);
-            libc::close(fd_devnull);
-            return Err(io::Error::last_os_error());
-        }
-
-        // Close the extra file descriptor.
-        libc::close(fd_devnull);
-
-        Ok(StderrGuard {
-            saved_fd,
-            std_err_lock,
-        })
-    }
-}
+// fn find_port(name: &str) -> Option<u16> {
+//     let nb_ports = unsafe { rte_eth_dev_count_avail() };
+//     for port_id in 0..nb_ports {
+//         let port_name = [0; 256];
+//         if unsafe { rte_eth_dev_get_name_by_port(port_id, port_name.as_ptr() as *mut i8) } == 0 {
+//             let port_name = unsafe { std::ffi::CStr::from_ptr(port_name.as_ptr() as *const i8) };
+//             let mut dev_info: rte_eth_dev_info = unsafe { mem::zeroed() };
+//             unsafe { rte_eth_dev_info_get(port_id, &mut dev_info) };
+//             if port_name.to_str().unwrap() == name {
+//                 return Some(port_id);
+//             }
+//         }
+//     }
+//     None
+// }
+// 
+// struct StderrGuard {
+//     saved_fd: RawFd,
+//     std_err_lock: StderrLock<'static>,
+// }
+// 
+// impl Drop for StderrGuard {
+//     fn drop(&mut self) {
+//         unsafe {
+//             // Restore stderr from the saved file descriptor.
+//             libc::dup2(self.saved_fd, libc::STDERR_FILENO);
+//             libc::close(self.saved_fd);
+//         }
+//     }
+// }
+// 
+// fn redirect_stderr_to_null() -> io::Result<StderrGuard> {
+//     let std_err_lock = std::io::stderr().lock();
+//     unsafe {
+//         // Save the original stderr file descriptor.
+//         let saved_fd = libc::dup(libc::STDERR_FILENO);
+//         if saved_fd < 0 {
+//             return Err(io::Error::last_os_error());
+//         }
+// 
+//         // Open /dev/null.
+//         let devnull = CString::new("/dev/null").unwrap();
+//         let fd_devnull = libc::open(devnull.as_ptr(), libc::O_WRONLY);
+//         if fd_devnull < 0 {
+//             libc::close(saved_fd);
+//             return Err(io::Error::last_os_error());
+//         }
+// 
+//         // Redirect stderr to /dev/null.
+//         if libc::dup2(fd_devnull, libc::STDERR_FILENO) < 0 {
+//             libc::close(saved_fd);
+//             libc::close(fd_devnull);
+//             return Err(io::Error::last_os_error());
+//         }
+// 
+//         // Close the extra file descriptor.
+//         libc::close(fd_devnull);
+// 
+//         Ok(StderrGuard {
+//             saved_fd,
+//             std_err_lock,
+//         })
+//     }
+// }
 
 pub(crate) struct Context {
-    file_prefix: u64,
+    // file_prefix: u64,
     ptr: *mut rte_mempool,
     port_id: u16,
     queue_id: u16,
@@ -134,12 +132,12 @@ impl Context {
         mbuf_default_buf_size: u16,
         queue_id: u16,
     ) -> io::Result<Self> {
-        let file_prefix = rand::rng().next_u64();
+        // let file_prefix = rand::rng().next_u64();
         let file_prefix_str = format!("--file-prefix={}", "server");
         let tmp = "-a".to_string();
 
         let tmp2 = iface.to_string(); // file_prefix);
-        let init_args = vec![file_prefix_str, tmp, tmp2];
+        let init_args = [file_prefix_str, tmp, tmp2];
         let mut cstrings: Vec<CString> = init_args
             .iter()
             .map(|arg| CString::new(arg.as_str()).unwrap())
@@ -165,24 +163,21 @@ impl Context {
             )
         };
         if mbuf_pool.is_null() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Cannot create mbuf pool",
-            ));
+            return Err(io::Error::other("Cannot create mbuf pool"));
         }
         let port_id = 0;
         unsafe {
             init_port(port_id, mbuf_pool)?;
         }
         Ok(Context {
-            file_prefix,
+            // file_prefix,
             ptr: mbuf_pool,
             port_id,
             queue_id,
         })
     }
 
-    pub(crate) fn new(
+    pub(crate) fn create(
         iface: &str,
         num_mbufs: u32,
         mbuf_cache_size: u32,
@@ -199,6 +194,7 @@ impl Context {
         Ok(Self::split(ctx))
     }
 
+    #[allow(clippy::arc_with_non_send_sync)]
     pub(crate) fn split(self) -> (BufferPool, Receiver, Transmitter) {
         let port_id = self.port_id;
         let queue_id = self.queue_id;
@@ -208,7 +204,7 @@ impl Context {
             ctx: Arc::clone(&ctx),
         };
         let receiver = Receiver {
-            ctx: Arc::clone(&ctx),
+            _ctx: Arc::clone(&ctx),
             bufs: [ptr::null_mut(); BURST_SIZE as usize],
             nb_rx: 0,
             index: 0,
@@ -250,7 +246,7 @@ impl BufferPool {
 }
 
 pub(crate) struct Receiver {
-    ctx: Arc<UnsafeCell<Context>>,
+    _ctx: Arc<UnsafeCell<Context>>,
     bufs: [*mut rte_mbuf; BURST_SIZE as usize],
     nb_rx: usize,
     index: usize,
@@ -317,7 +313,7 @@ impl<'a> Iterator for ReceiverIterMut<'a> {
 }
 
 pub(crate) struct Transmitter {
-    ctx: Arc<UnsafeCell<Context>>,
+    _ctx: Arc<UnsafeCell<Context>>,
     mempool: *mut rte_mempool,
     bufs: ArrayVec<*mut rte_mbuf, { BURST_SIZE as usize }>,
     ready_bufs: ArrayVec<NonNull<rte_mbuf>, { BURST_SIZE as usize }>,
@@ -346,11 +342,7 @@ impl Transmitter {
         }
 
         let ret = unsafe {
-            rust_rte_pktmbuf_alloc_bulk(
-                mempool,
-                bufs.as_mut_ptr() as *mut *mut _,
-                bufs.capacity() as u32,
-            )
+            rust_rte_pktmbuf_alloc_bulk(mempool, bufs.as_mut_ptr(), bufs.capacity() as u32)
         };
 
         if ret != 0 {
@@ -361,7 +353,7 @@ impl Transmitter {
         let queue_id = unsafe { (*ctx.get()).queue_id };
 
         Self {
-            ctx,
+            _ctx: ctx,
             mempool,
             bufs,
             ready_bufs: ArrayVec::new(),
@@ -389,11 +381,7 @@ impl<'a> TransmitterIterMut<'a> {
 
             let slice = &mut self.tx.bufs[old_len..];
             let res = unsafe {
-                rust_rte_pktmbuf_alloc_bulk(
-                    self.tx.mempool,
-                    slice.as_mut_ptr() as *mut *mut _,
-                    can_ask as u32,
-                )
+                rust_rte_pktmbuf_alloc_bulk(self.tx.mempool, slice.as_mut_ptr(), can_ask as u32)
             };
             if res != 0 {
                 for _ in 0..can_ask {

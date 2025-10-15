@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+/*use std::path::PathBuf;
 use std::process::Command;
 use std::{env, fs};
 
@@ -104,4 +104,187 @@ fn compile_extern_source_code() {
     // Tell cargo to statically link against the `libextern` static library.
     println!("cargo:rustc-link-search={}", env::var("OUT_DIR").unwrap());
     println!("cargo:rustc-link-lib=static=extern");
+}
+*/
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+const WRAPPER: &str = "netmap.h";
+
+fn main() {
+    println!("cargo:rerun-if-changed={WRAPPER}");
+    println!("cargo:rerun-if-env-changed=NETMAP_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=NETMAP_INCLUDE_DIR");
+    println!("cargo:rerun-if-env-changed=LIBNETMAP_ALLOW_NON_PIC");
+
+    // Where headers live
+    let include_dirs: Vec<PathBuf> = {
+        if let Ok(d) = env::var("NETMAP_INCLUDE_DIR") {
+            vec![PathBuf::from(d)]
+        } else {
+            vec![PathBuf::from("/usr/local/include"), PathBuf::from("/usr/include")]
+        }
+    };
+
+    // Where libs live
+    let lib_dirs: Vec<PathBuf> = {
+        if let Ok(d) = env::var("NETMAP_LIB_DIR") {
+            vec![PathBuf::from(d)]
+        } else {
+            vec![PathBuf::from("/usr/local/lib"), PathBuf::from("/usr/local/lib64"), PathBuf::from("/usr/lib64"), PathBuf::from("/usr/lib")]
+        }
+    };
+
+    // Add search paths (+ rpath for .so)
+    for d in &lib_dirs {
+        println!("cargo:rustc-link-search=native={}", d.display());
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", d.display());
+    }
+
+    // Decide how to link
+    let mut found_so = None;
+    let mut found_a  = None;
+    for d in &lib_dirs {
+        if has_any(d, "libnetmap.so") { found_so = Some(d.clone()); break; }
+        if d.join("libnetmap.a").exists() { found_a = Some(d.clone()); }
+    }
+
+    match (found_so, found_a) {
+        (Some(_), _) => {
+            println!("cargo:rustc-link-lib=dylib=netmap");
+        }
+        (None, Some(d)) => {
+            // Static only. We'll allow it only if the .a is PIC-safe.
+            let a = d.join("libnetmap.a");
+            if archive_has_abs32(&a) && env::var_os("LIBNETMAP_ALLOW_NON_PIC").is_none() {
+                // Clear, early error with how to fix
+                panic!(
+                    "Found static {} but it contains non-PIC objects. PIE cannot link it.\n\
+                     Fix it by installing a shared libnetmap.so or rebuilding static PIC, e.g.:\n\
+                     \n  cd /path/to/netmap\n  make clean\n  make CFLAGS='-fPIC' CFLAGS_USER='-fPIC'\n  sudo make install\n\
+                     \n(Or set NETMAP_LIB_DIR/NETMAP_INCLUDE_DIR to a PIC build.)",
+                    a.display()
+                );
+            }
+            println!("cargo:rustc-link-lib=static=netmap");
+        }
+        (None, None) => {
+            panic!(
+                "Could not find libnetmap in {:?}. Set NETMAP_LIB_DIR and (optionally) NETMAP_INCLUDE_DIR.",
+                lib_dirs
+            );
+        }
+    }
+
+    // --- bindgen ---
+    let mut b = bindgen::Builder::default()
+        .header(WRAPPER)
+        .derive_debug(true)
+        .derive_default(true)
+        .derive_eq(true)
+        .derive_ord(true)
+        .derive_partialeq(true)
+        .derive_partialord(true)
+        .wrap_static_fns(true)
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .allowlist_file("[^\\s]*netmap[^\\s]*")
+        .generate_comments(true)
+        .clang_args(["-fretain-comments-from-system-headers", "-fparse-all-comments"]);
+
+    for inc in &include_dirs {
+        b = b.clang_arg(format!("-I{}", inc.display()));
+    }
+
+    let bindings = b.generate().expect("Unable to generate bindings");
+    compile_extern_source_code(&include_dirs);
+
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+    bindings
+        .write_to_file(out.join("bindings.rs"))
+        .expect("Couldn't write bindings!");
+}
+
+/// Compile bindgen's generated extern.c with -fPIC and archive it.
+fn compile_extern_source_code(include_dirs: &[PathBuf]) {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let tmp_dir = env::temp_dir().join("bindgen");
+    fs::create_dir_all(&tmp_dir).expect("failed to create temp bindgen dir");
+
+    let extern_c = tmp_dir.join("extern.c");
+    if !extern_c.exists() {
+        // bindgen writes extern.c lazily; if it isn't there yet, that's unexpected.
+        // Most users never hit this, but give a clear hint in case.
+        panic!("bindgen did not generate {} (wrap_static_fns)", extern_c.display());
+    }
+
+    fs::copy(WRAPPER, tmp_dir.join(WRAPPER)).expect("Failed to copy header file");
+
+    let obj_path = out_dir.join("extern.o");
+    let mut clang = Command::new("clang");
+    clang.args(["-O2", "-fPIC", "-fno-common", "-c"]);
+    for inc in include_dirs {
+        clang.arg(format!("-I{}", inc.display()));
+    }
+    clang.arg("-include").arg(tmp_dir.join(WRAPPER));
+    clang.arg(extern_c);
+    clang.arg("-o").arg(&obj_path);
+    let status = clang.status().expect("failed to run clang");
+    assert!(status.success(), "Could not compile extern.o (see clang output)");
+
+    // ar rcs libextern.a extern.o
+    let lib_path = out_dir.join("libextern.a");
+    let status = Command::new("ar")
+        .args(["rcs"])
+        .arg(&lib_path)
+        .arg(&obj_path)
+        .status()
+        .expect("failed to run ar");
+    assert!(status.success(), "Could not emit libextern.a");
+
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=extern");
+}
+
+fn has_any(dir: &Path, stem: &str) -> bool {
+    if dir.join(stem).exists() { return true; }
+    if let Ok(rd) = dir.read_dir() {
+        for e in rd.flatten() {
+            if let Some(name) = e.file_name().to_str() {
+                if name.starts_with(stem) { return true; }
+            }
+        }
+    }
+    false
+}
+
+// Return true if the archive shows absolute 32-bit relocations (non-PIC).
+fn archive_has_abs32(archive: &Path) -> bool {
+    let checks = [
+        ("objdump", vec!["-r", archive.to_str().unwrap()]),
+        ("llvm-objdump", vec!["-r", archive.to_str().unwrap()]),
+        ("readelf", vec!["-rW", archive.to_str().unwrap()]),
+    ];
+    for (tool, args) in checks {
+        if which(tool) {
+            let out = Command::new(tool).args(&args).output().ok();
+            if let Some(out) = out {
+                let s = String::from_utf8_lossy(&out.stdout);
+                if s.contains("R_X86_64_32") || s.contains("R_X86_64_32S") {
+                    return true;
+                } else {
+                    return false;
+                }
+            }
+        }
+    }
+    // If we can't inspect, assume OK and let the linker be the judge.
+    false
+}
+
+fn which(bin: &str) -> bool {
+    env::var_os("PATH")
+        .and_then(|p| env::split_paths(&p).find(|d| d.join(bin).exists()))
+        .is_some()
 }

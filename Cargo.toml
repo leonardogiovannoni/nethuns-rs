@@ -25,6 +25,8 @@ libbpf-sys = "1.5.0"
 aya = "0.13.1"
 thiserror = "2.0.12"
 triomphe = "0.1.14"
+flume = "0.11.1"
+pcap = "2.3.0"
 
 #libxdp-sys = { path = "libxdp-sys" }
 
@@ -36,3 +38,20 @@ lto = "fat"
 debug = true
 panic = "abort"
 debug-assertions = false
+
+
+
+[[example]]
+name = "meter"
+
+[[example]]
+name = "meter2"
+
+[[example]]
+name = "forward"
+
+[[example]]
+name = "forward_mt"
+
+[[example]]
+name = "pkt-gen"
