@@ -1,9 +1,14 @@
 use anyhow::Result;
 use arrayvec::ArrayVec;
 use clap::{Parser, Subcommand};
+use nethuns_rs::api::bdistributor::nspscbdistributor::aspsc::{AspscNSPSCChannel, nspsc_channel};
 use nethuns_rs::api::{Payload, Socket};
 use nethuns_rs::api::distributor::{Distributor, SPMCDistributor};
 use nethuns_rs::api::distributor::{SPMCDistributorPopper, SPMCDistributorPusher};
+
+use nethuns_rs::api::distributor::NSPSCDistributor;
+use nethuns_rs::api::distributor::NSPSCDistributorPopper;
+use nethuns_rs::api::distributor::NSPSCDistributorPusher;
 #[cfg(feature = "af_xdp")]
 use nethuns_rs::af_xdp;
 #[cfg(feature = "dpdk")]
@@ -151,7 +156,7 @@ where
             &args.in_if,
             args.ciao,
             flags.clone(),
-            flume::unbounded(),
+            AspscNSPSCChannel::new(),
         )?;
     let (in_pusher, mut in_poppers) = d.split(1);
     let in_popper = in_poppers.pop().expect("missing popper");
@@ -194,7 +199,7 @@ where
                 Ok(batch) => batch,
                 Err(_) => unreachable!(),
             };
-            spin_push::<{ BATCH_SIZE }, Sock>(&in_pusher, b);
+            spin_push2::<{ BATCH_SIZE }, Sock>(&in_pusher, b);
             batch = ArrayVec::new();
         }
     }
@@ -218,6 +223,26 @@ fn spin_push<'a, const BATCH_SIZE: usize, S: Socket>(
         break;
     }
 }
+
+fn spin_push2<'a, const BATCH_SIZE: usize, S: Socket>(
+    in_pusher: &'a impl NSPSCDistributorPusher<BATCH_SIZE, S::Context>,
+    mut batch: [Payload<'a, S::Context>; BATCH_SIZE],
+) {
+    loop {
+        match in_pusher.try_push(batch, 0) {
+            Ok(()) => {}
+            Err(err) => {
+                batch = err.into_inner();
+                thread::yield_now();
+                continue;
+            }
+        };
+        break;
+    }
+}
+
+
+
 
 pub fn main() -> Result<()> {
     let args = Args::parse();
