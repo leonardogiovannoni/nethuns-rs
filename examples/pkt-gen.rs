@@ -16,7 +16,15 @@
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use etherparse::PacketBuilder;
-use nethuns_rs::{af_xdp, api::Socket, dpdk, netmap};
+use nethuns_rs::api::Socket;
+#[cfg(feature = "af_xdp")]
+use nethuns_rs::af_xdp;
+#[cfg(feature = "dpdk")]
+use nethuns_rs::dpdk;
+#[cfg(feature = "netmap")]
+use nethuns_rs::netmap;
+#[cfg(feature = "pcap")]
+use nethuns_rs::pcap;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -100,18 +108,23 @@ struct Args {
 #[derive(Subcommand, Debug, Clone)]
 enum Framework {
     /// Use **netmap**.
+    #[cfg(feature = "netmap")]
     Netmap(NetmapArgs),
     /// Use **AF_XDP**.
+    #[cfg(feature = "af_xdp")]
     AfXdp(AfXdpArgs),
     /// Use **DPDK**.
+    #[cfg(feature = "dpdk")]
     Dpdk(DpdkArgs),
     // Use **pcap** (for testing / low speed).
+    #[cfg(feature = "pcap")]
     Pcap(PcapArgs),
 }
 
 
 // ───────────────────────── pcap specific ──────────────────────────────
 #[derive(Parser, Debug, Clone)]
+#[cfg(feature = "pcap")]
 struct PcapArgs {
     /// Snaplen passed to libpcap.
     #[clap(long, default_value_t = 65535)]
@@ -138,6 +151,7 @@ struct PcapArgs {
 
 // ───────────────────────── netmap specific ────────────────────────────
 #[derive(Parser, Debug, Clone)]
+#[cfg(feature = "netmap")]
 struct NetmapArgs {
     #[clap(long, default_value_t = 1024)]
     extra_buf: u32,
@@ -149,6 +163,7 @@ struct NetmapArgs {
 
 // ───────────────────────── dpdk specific ──────────────────────────────
 #[derive(Parser, Debug, Clone)]
+#[cfg(feature = "dpdk")]
 struct DpdkArgs {
     #[clap(long, default_value_t = 8192)]
     num_mbufs: u32,
@@ -164,6 +179,7 @@ struct DpdkArgs {
 
 // ───────────────────────── af_xdp specific ────────────────────────────
 #[derive(Parser, Debug, Clone)]
+#[cfg(feature = "af_xdp")]
 struct AfXdpArgs {
     #[clap(long, default_value_t = 0)]
     bind_flags: u16,
@@ -412,12 +428,14 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     match &args.framework {
+        #[cfg(feature = "netmap")]
         Framework::Netmap(nm) => {
             let flags = netmap::NetmapFlags {
                 extra_buf: nm.extra_buf,
             };
             run_tx::<netmap::Sock>(flags, &args)?;
         }
+        #[cfg(feature = "af_xdp")]
         Framework::AfXdp(xdp) => {
             let flags = af_xdp::AfXdpFlags {
                 bind_flags: xdp.bind_flags,
@@ -429,6 +447,7 @@ fn main() -> Result<()> {
             };
             run_tx::<af_xdp::Sock>(flags, &args)?;
         }
+        #[cfg(feature = "dpdk")]
         Framework::Dpdk(dp) => {
             let flags = dpdk::DpdkFlags {
                 num_mbufs: dp.num_mbufs,
@@ -437,8 +456,9 @@ fn main() -> Result<()> {
             };
             run_tx::<dpdk::Sock>(flags, &args)?;
         }
+        #[cfg(feature = "pcap")]
         Framework::Pcap(pcap) => {
-            let flags = nethuns_rs::pcap::PcapFlags {
+            let flags = pcap::PcapFlags {
                 snaplen: pcap.snaplen,
                 promiscuous: pcap.promiscuous,
                 timeout_ms: pcap.timeout_ms,
@@ -447,7 +467,7 @@ fn main() -> Result<()> {
                 buffer_size: pcap.buffer_size,
                 buffer_count: pcap.buffer_count,
             };
-            run_tx::<nethuns_rs::pcap::Sock>(flags, &args)?;
+            run_tx::<pcap::Sock>(flags, &args)?;
         }
     }
     Ok(())

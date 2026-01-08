@@ -4,7 +4,14 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use crate::{af_xdp, dpdk, netmap};
+#[cfg(feature = "af_xdp")]
+use crate::af_xdp;
+#[cfg(feature = "dpdk")]
+use crate::dpdk;
+#[cfg(feature = "netmap")]
+use crate::netmap;
+#[cfg(feature = "pcap")]
+use crate::pcap;
 
 pub type Result<T> = std::result::Result<T, crate::errors::Error>;
 
@@ -460,10 +467,14 @@ pub trait Metadata: Send {
 }
 
 pub enum MetadataType {
+    #[cfg(feature = "netmap")]
     Netmap(netmap::Meta),
+    #[cfg(feature = "af_xdp")]
     AfXdp(af_xdp::Meta),
+    #[cfg(feature = "dpdk")]
     Dpdk(dpdk::Meta),
-    Pcap(crate::pcap::Meta),
+    #[cfg(feature = "pcap")]
+    Pcap(pcap::Meta),
 }
 
 pub trait Flags: Clone + Debug {}

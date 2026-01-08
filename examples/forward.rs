@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::sync::{
     Arc,
@@ -8,11 +8,15 @@ use std::thread;
 use std::time::Duration;
 
 // Import the framework APIs.
-use nethuns_rs::{
-    af_xdp,
-    api::{Flags, Socket},
-    netmap,
-};
+use nethuns_rs::api::{Flags, Socket};
+#[cfg(feature = "af_xdp")]
+use nethuns_rs::af_xdp;
+#[cfg(feature = "dpdk")]
+use nethuns_rs::dpdk;
+#[cfg(feature = "netmap")]
+use nethuns_rs::netmap;
+#[cfg(feature = "pcap")]
+use nethuns_rs::pcap;
 
 /// Command-line arguments.
 #[derive(Parser, Debug)]
@@ -35,13 +39,22 @@ struct Args {
 #[derive(Subcommand, Debug, Clone)]
 enum Framework {
     /// Use netmap framework.
+    #[cfg(feature = "netmap")]
     Netmap(NetmapArgs),
     /// Use AF_XDP framework.
+    #[cfg(feature = "af_xdp")]
     AfXdp(AfXdpArgs),
+    /// Use DPDK framework.
+    #[cfg(feature = "dpdk")]
+    Dpdk(DpdkArgs),
+    /// Use pcap framework.
+    #[cfg(feature = "pcap")]
+    Pcap(PcapArgs),
 }
 
 /// Netmap-specific arguments.
 #[derive(Parser, Debug, Clone)]
+#[cfg(feature = "netmap")]
 struct NetmapArgs {
     /// Extra buffer size for netmap.
     #[clap(long, default_value_t = 1024)]
@@ -54,6 +67,7 @@ struct NetmapArgs {
 
 /// AF_XDP-specific arguments.
 #[derive(Parser, Debug, Clone)]
+#[cfg(feature = "af_xdp")]
 struct AfXdpArgs {
     /// Bind flags for AF_XDP.
     #[clap(long, default_value_t = 0)]
@@ -61,6 +75,49 @@ struct AfXdpArgs {
     /// XDP flags for AF_XDP.
     #[clap(long, default_value_t = 0)]
     xdp_flags: u32,
+}
+
+/// DPDK-specific arguments.
+#[derive(Parser, Debug, Clone)]
+#[cfg(feature = "dpdk")]
+struct DpdkArgs {
+    #[clap(long, default_value_t = 8192)]
+    num_mbufs: u32,
+    #[clap(long, default_value_t = 250)]
+    mbuf_cache_size: u32,
+    #[clap(long, default_value_t = 2176)]
+    mbuf_default_buf_size: u32,
+    #[clap(long, default_value_t = 256)]
+    consumer_buffer_size: usize,
+    #[clap(long, default_value_t = 256)]
+    producer_buffer_size: usize,
+}
+
+/// Pcap-specific arguments.
+#[derive(Parser, Debug, Clone)]
+#[cfg(feature = "pcap")]
+struct PcapArgs {
+    /// Snaplen passed to libpcap.
+    #[clap(long, default_value_t = 65535)]
+    snaplen: i32,
+    /// Promiscuous mode.
+    #[clap(long, default_value_t = true)]
+    promiscuous: bool,
+    /// Read timeout in milliseconds (for live captures).
+    #[clap(long, default_value_t = 1)]
+    timeout_ms: i32,
+    /// libpcap immediate mode (deliver packets as soon as they arrive).
+    #[clap(long, default_value_t = true)]
+    immediate: bool,
+    /// Optional BPF filter (tcpdump syntax).
+    #[clap(long)]
+    filter: Option<String>,
+    /// Size of each buffer in the pool (bytes).
+    #[clap(long, default_value_t = 2048)]
+    buffer_size: usize,
+    /// Initial number of buffers to preallocate.
+    #[clap(long, default_value_t = 32)]
+    buffer_count: usize,
 }
 
 pub fn main() -> Result<()> {
@@ -79,12 +136,14 @@ pub fn main() -> Result<()> {
 
     // Choose the proper framework and run the forwarder.
     match args.framework.clone() {
+        #[cfg(feature = "netmap")]
         Framework::Netmap(netmap_args) => {
             let flags = netmap::NetmapFlags {
                 extra_buf: netmap_args.extra_buf,
             };
             run_forwarder::<netmap::Sock>(flags, &args, term)
         }
+        #[cfg(feature = "af_xdp")]
         Framework::AfXdp(af_xdp_args) => {
             let flags = af_xdp::AfXdpFlags {
                 bind_flags: af_xdp_args.bind_flags,
@@ -95,6 +154,28 @@ pub fn main() -> Result<()> {
                 rx_size: 2048,
             };
             run_forwarder::<af_xdp::Sock>(flags, &args, term)
+        }
+        #[cfg(feature = "dpdk")]
+        Framework::Dpdk(dpdk_args) => {
+            let flags = dpdk::DpdkFlags {
+                num_mbufs: dpdk_args.num_mbufs,
+                mbuf_cache_size: dpdk_args.mbuf_cache_size,
+                mbuf_default_buf_size: dpdk_args.mbuf_default_buf_size as u16,
+            };
+            run_forwarder::<dpdk::Sock>(flags, &args, term)
+        }
+        #[cfg(feature = "pcap")]
+        Framework::Pcap(pcap_args) => {
+            let flags = pcap::PcapFlags {
+                snaplen: pcap_args.snaplen,
+                promiscuous: pcap_args.promiscuous,
+                timeout_ms: pcap_args.timeout_ms,
+                immediate: pcap_args.immediate,
+                filter: pcap_args.filter.clone(),
+                buffer_size: pcap_args.buffer_size,
+                buffer_count: pcap_args.buffer_count,
+            };
+            run_forwarder::<pcap::Sock>(flags, &args, term)
         }
     }
 }
