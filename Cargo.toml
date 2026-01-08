@@ -21,6 +21,7 @@ dpdk-sys = { path = "dpdk-sys", optional = true }
 rand = "0.9.0"
 procspawn = "1.0.1"
 arrayvec = "0.7.6"
+aspsc = { path = "aspsc" }
 libbpf-sys = { version = "1.5.0", optional = true }
 aya = { version = "0.13.1", optional = true }
 thiserror = "2.0.12"

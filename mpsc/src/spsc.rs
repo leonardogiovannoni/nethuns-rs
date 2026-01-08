@@ -3,7 +3,6 @@ use core::cell::UnsafeCell;
 use core::sync::atomic;
 use std::sync::Arc;
 
-use arrayvec::ArrayVec;
 use atomic::{AtomicUsize, Ordering};
 use ringbuf::storage::Heap;
 use ringbuf::traits::Split;

@@ -1,7 +1,9 @@
 use anyhow::Result;
 use arrayvec::ArrayVec;
 use clap::{Parser, Subcommand};
-use nethuns_rs::api::{NethunsPusher, Payload, Socket};
+use nethuns_rs::api::{Payload, Socket};
+use nethuns_rs::api::distributor::{Distributor, SPMCDistributor};
+use nethuns_rs::api::distributor::{SPMCDistributorPopper, SPMCDistributorPusher};
 #[cfg(feature = "af_xdp")]
 use nethuns_rs::af_xdp;
 #[cfg(feature = "dpdk")]
@@ -144,8 +146,15 @@ where
     let total_fwd_consumer = total_fwd.clone();
     let out_if = args.out_if.clone();
     let flags_consumer = flags.clone();
-    let (in_socket, in_pusher, in_popper) =
-        Sock::create_with_channel::<{ BATCH_SIZE }>(&args.in_if, args.ciao, flags.clone(), flume::unbounded())?;
+    let (in_socket, d) =
+        Sock::create_with_distributor::<{ BATCH_SIZE }, _>(
+            &args.in_if,
+            args.ciao,
+            flags.clone(),
+            flume::unbounded(),
+        )?;
+    let (in_pusher, mut in_poppers) = d.split(1);
+    let in_popper = in_poppers.pop().expect("missing popper");
     let out_socket = Sock::create(&out_if, args.ciao, flags_consumer)?;
     {
         let _fwd_thread = thread::spawn(move || -> Result<()> {
@@ -154,9 +163,9 @@ where
             }
             out_socket.flush();
             loop {
-                if let Some(batch) = in_popper.pop() {
+                if let Ok(batch) = in_popper.try_pop() {
                     let len = batch.len();
-                    for packet in batch {
+                    for packet in &batch {
                         out_socket.send(&packet)?;
                         out_socket.flush();
                     }
@@ -194,15 +203,18 @@ where
 }
 
 fn spin_push<'a, const BATCH_SIZE: usize, S: Socket>(
-    in_pusher: &'a NethunsPusher<BATCH_SIZE, S::Context>,
+    in_pusher: &'a impl SPMCDistributorPusher<BATCH_SIZE, S::Context>,
     mut batch: [Payload<'a, S::Context>; BATCH_SIZE],
 ) {
     loop {
-        if let Err(b) = in_pusher.push(batch) {
-            batch = b;
-            thread::yield_now();
-            continue;
-        }
+        match in_pusher.try_push(batch) {
+            Ok(()) => {}
+            Err(err) => {
+                batch = err.into_inner();
+                thread::yield_now();
+                continue;
+            }
+        };
         break;
     }
 }

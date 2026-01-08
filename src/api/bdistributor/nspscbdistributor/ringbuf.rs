@@ -7,7 +7,7 @@ use ringbuf::traits::Split;
 use ringbuf::traits::{Consumer as RbConsumer, Producer as RbProducer};
 use ringbuf::{CachingCons, CachingProd, HeapRb, SharedRb};
 
-use crate::api::bdistributor::BDistributor;
+use crate::api::bdistributor::{BDistributor, PopError, PushError, TryPopError, TryPushError};
 use crate::api::bdistributor::nspscbdistributor::{NSPSCBDistributor, NSPSCBDistributorPopper, NSPSCBDistributorPusher};
 use crate::api::bdistributor::spmcbdistributor::{SPMCBDistributor, SPMCBDistributorPusher};
 
@@ -124,21 +124,42 @@ impl<const BATCH_SIZE: usize, T: Send + 'static> NSPSCBDistributor<BATCH_SIZE, T
 impl<const BATCH_SIZE: usize, T: Send + 'static> NSPSCBDistributorPusher<BATCH_SIZE, T>
     for MultiProducer<[T; BATCH_SIZE]>
 {
-    fn push(&self, batch: [T; BATCH_SIZE], index: usize) -> core::result::Result<(), [T; BATCH_SIZE]> {
+    fn try_push(
+        &self,
+        batch: [T; BATCH_SIZE],
+        index: usize,
+    ) -> core::result::Result<(), TryPushError<[T; BATCH_SIZE]>> {
         let mut prods = self.prods.borrow_mut();
         assert!(
             index < prods.len(),
             "index out of bounds: {index} >= {}",
             prods.len()
         );
-        prods[index].push(batch)
+        prods[index].push(batch).map_err(TryPushError::Full)
+    }
+
+    fn push(
+        &self,
+        batch: [T; BATCH_SIZE],
+        index: usize,
+    ) -> impl core::future::Future<Output = core::result::Result<(), PushError<[T; BATCH_SIZE]>>> {
+        async move {
+            self.try_push(batch, index)
+                .map_err(|err| PushError(err.into_inner()))
+        }
     }
 }
 
 impl<const BATCH_SIZE: usize, T: Send + 'static> NSPSCBDistributorPopper<BATCH_SIZE, T>
     for Consumer<[T; BATCH_SIZE]>
 {
-    fn pop(&self) -> Option<[T; BATCH_SIZE]> {
-        Consumer::pop(self)
+    fn try_pop(&self) -> Result<[T; BATCH_SIZE], TryPopError> {
+        Consumer::pop(self).ok_or(TryPopError::Empty)
+    }
+
+    fn pop(
+        &self,
+    ) -> impl core::future::Future<Output = Result<[T; BATCH_SIZE], PopError>> {
+        async move { self.try_pop().map_err(|_| PopError) }
     }
 }

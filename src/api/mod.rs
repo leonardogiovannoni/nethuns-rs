@@ -1,11 +1,10 @@
 use std::{
-    fmt::Debug,
-    mem::ManuallyDrop,
-    ops::{Deref, DerefMut},
+    cell::RefCell, fmt::Debug, mem::ManuallyDrop, ops::{Deref, DerefMut}
 };
 
 #[cfg(feature = "af_xdp")]
 use crate::af_xdp;
+use crate::api::bdistributor::BDistributor;
 #[cfg(feature = "dpdk")]
 use crate::dpdk;
 #[cfg(feature = "netmap")]
@@ -16,6 +15,9 @@ use crate::pcap;
 pub type Result<T> = std::result::Result<T, crate::errors::Error>;
 
 pub const DEFAULT_BATCH_SIZE: usize = 32;
+
+pub mod bdistributor;
+pub mod distributor;
 
 #[inline]
 #[cold]
@@ -200,29 +202,22 @@ pub trait Socket: Send + Sized {
 
     fn create(portspec: &str, queue: Option<usize>, flags: Self::Flags) -> Result<Self>;
 
-    fn create_with_channel<const BATCH_SIZE: usize>(
+    fn create_with_distributor<const BATCH_SIZE: usize, D: BDistributor<{ BATCH_SIZE }, Token>>(
         portspec: &str,
         queue: Option<usize>,
         flags: Self::Flags,
-        channel: impl APINethunsChannel<{ BATCH_SIZE }, Token>,
+        distributor: D,
     ) -> Result<(
         Self,
-        NethunsPusher<{ BATCH_SIZE }, Self::Context>,
-        NethunsPopper<{ BATCH_SIZE }, Self::Context>,
+        distributor::ContextWrapper<BATCH_SIZE, D, Self::Context>,
     )> {
         let socket = Self::create(portspec, queue, flags)?;
-        let (inner_pusher, inner_popper) = channel.split();
-
-        let popper = NethunsPopper {
-            inner: Box::new(inner_popper),
-            ctx: socket.context().clone(),
+        let ctx = socket.context().clone();
+        let dist = distributor::ContextWrapper {
+            ctx,
+            data: RefCell::new(distributor),
         };
-
-        let pusher = NethunsPusher {
-            inner: Box::new(inner_pusher),
-            ctx: socket.context().clone(),
-        };
-        Ok((socket, pusher, popper))
+        Ok((socket, dist))
     }
 
     fn context(&self) -> &Self::Context;

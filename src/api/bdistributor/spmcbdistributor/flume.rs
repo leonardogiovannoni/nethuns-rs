@@ -6,7 +6,7 @@
 // =============================================================================
 
 use crate::api::bdistributor::{
-    BDistributor,
+    BDistributor, PopError, PushError, TryPopError, TryPushError,
     spmcbdistributor::{SPMCBDistributor, SPMCBDistributorPopper, SPMCBDistributorPusher},
 };
 
@@ -47,14 +47,21 @@ impl<const BATCH_SIZE: usize, T: Send + 'static> SPMCBDistributor<BATCH_SIZE, T>
 impl<const BATCH_SIZE: usize, T: Send + 'static> SPMCBDistributorPusher<BATCH_SIZE, T>
     for flume::Sender<[T; BATCH_SIZE]>
 {
-    fn push(&self, batch: [T; BATCH_SIZE]) -> core::result::Result<(), [T; BATCH_SIZE]> {
-        // Send each batch individually
-        if let Err(err) = self.send(batch) {
-            // If sending fails, we can't recover the batches easily
-            // This is a limitation of the current design
-            panic!("Failed to send batch: {:?}", err);
-        }
-        Ok(())
+    fn try_push(
+        &self,
+        batch: [T; BATCH_SIZE],
+    ) -> core::result::Result<(), TryPushError<[T; BATCH_SIZE]>> {
+        self.try_send(batch).map_err(|err| match err {
+            flume::TrySendError::Full(batch) => TryPushError::Full(batch),
+            flume::TrySendError::Disconnected(batch) => TryPushError::Closed(batch),
+        })
+    }
+
+    fn push(
+        &self,
+        batch: [T; BATCH_SIZE],
+    ) -> impl core::future::Future<Output = core::result::Result<(), PushError<[T; BATCH_SIZE]>>> {
+        async move { self.send(batch).map_err(|err| PushError(err.0)) }
     }
 }
 
@@ -70,7 +77,16 @@ impl<const BATCH_SIZE: usize, T: Send + 'static> BDistributor<BATCH_SIZE, [T; BA
 impl<const BATCH_SIZE: usize, T: Send + 'static> SPMCBDistributorPopper<BATCH_SIZE, T>
     for flume::Receiver<[T; BATCH_SIZE]>
 {
-    fn pop(&self) -> Option<[T; BATCH_SIZE]> {
-        self.recv().ok()
+    fn try_pop(&self) -> Result<[T; BATCH_SIZE], TryPopError> {
+        self.try_recv().map_err(|err| match err {
+            flume::TryRecvError::Empty => TryPopError::Empty,
+            flume::TryRecvError::Disconnected => TryPopError::Closed,
+        })
+    }
+
+    fn pop(
+        &self,
+    ) -> impl core::future::Future<Output = Result<[T; BATCH_SIZE], PopError>> {
+        async move { self.recv().map_err(|_| PopError) }
     }
 }
