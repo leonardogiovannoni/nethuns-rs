@@ -1,7 +1,7 @@
 use anyhow::Result;
 use arrayvec::ArrayVec;
 use clap::{Parser, Subcommand};
-use nethuns_rs::api::bdistributor::nspscbdistributor::aspsc::{AspscNSPSCChannel, nspsc_channel};
+use nethuns_rs::api::bdistributor::nspscbdistributor::aspsc::{nspsc_channel};
 use nethuns_rs::api::{Payload, Socket};
 use nethuns_rs::api::distributor::{Distributor, SPMCDistributor};
 use nethuns_rs::api::distributor::{SPMCDistributorPopper, SPMCDistributorPusher};
@@ -156,9 +156,9 @@ where
             &args.in_if,
             args.ciao,
             flags.clone(),
-            AspscNSPSCChannel::new(),
+            nspsc_channel(1024, 1),
         )?;
-    let (in_pusher, mut in_poppers) = d.split(1);
+    let (in_pusher, mut in_poppers) = d.split();
     let in_popper = in_poppers.pop().expect("missing popper");
     let out_socket = Sock::create(&out_if, args.ciao, flags_consumer)?;
     {
@@ -203,7 +203,6 @@ where
             batch = ArrayVec::new();
         }
     }
-
     Ok(())
 }
 

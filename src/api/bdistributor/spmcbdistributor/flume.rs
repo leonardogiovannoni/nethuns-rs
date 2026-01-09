@@ -17,9 +17,6 @@ impl<const BATCH_SIZE: usize, T: Send + 'static> BDistributor<BATCH_SIZE, T>
         flume::Receiver<[T; BATCH_SIZE]>,
     )
 {
-    fn create(inner: Self) -> Self {
-        inner
-    }
 }
 
 impl<const BATCH_SIZE: usize, T: Send + 'static> SPMCBDistributor<BATCH_SIZE, T>
@@ -69,9 +66,6 @@ impl<const BATCH_SIZE: usize, T: Send + 'static> SPMCBDistributorPusher<BATCH_SI
 impl<const BATCH_SIZE: usize, T: Send + 'static> BDistributor<BATCH_SIZE, [T; BATCH_SIZE]>
     for flume::Receiver<[T; BATCH_SIZE]>
 {
-    fn create(inner: Self) -> Self {
-        inner
-    }
 }
 
 impl<const BATCH_SIZE: usize, T: Send + 'static> SPMCBDistributorPopper<BATCH_SIZE, T>

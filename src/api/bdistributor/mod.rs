@@ -17,7 +17,6 @@ pub mod nspscbdistributor;
 
 /// Base trait for inner distributors that work with the backend
 pub trait BDistributor<const N: usize, T>: Send + Sized {
-    fn create(inner: Self) -> Self;
 }
 
 /// An error returned from popping operations.

@@ -88,35 +88,20 @@ pub fn nspsc_channel<T>(capacity: usize, n: usize) -> (MultiProducer<T>, Vec<Con
     (MultiProducer { prods: RefCell::new(prod_vec) }, cons_vec)
 }
 
-pub struct NSPSCChannel<T> {
-    _marker: std::marker::PhantomData<T>,
-}
-
-impl<T> NSPSCChannel<T> {
-    pub fn new() -> Self {
-        Self {
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
 
 impl<const BATCH_SIZE: usize, T: Send + 'static> BDistributor<BATCH_SIZE, T>
-    for NSPSCChannel<T>
+    for (MultiProducer<[T; BATCH_SIZE]>, Vec<Consumer<[T; BATCH_SIZE]>>) 
 {
-    fn create(inner: Self) -> Self {
-        inner
-    }
 }
 
 impl<const BATCH_SIZE: usize, T: Send + 'static> NSPSCBDistributor<BATCH_SIZE, T>
-    for NSPSCChannel<T>
+    for (MultiProducer<[T; BATCH_SIZE]>, Vec<Consumer<[T; BATCH_SIZE]>>)
 {
     type Pusher = MultiProducer<[T; BATCH_SIZE]>;
     type Popper = Consumer<[T; BATCH_SIZE]>;
 
-    fn split(self, n: usize) -> (Self::Pusher, Vec<Self::Popper>) {
-        let (pusher, poppers) = nspsc_channel::<[T; BATCH_SIZE]>(1024, n);
+    fn split(self) -> (Self::Pusher, Vec<Self::Popper>) {
+        let (pusher, poppers) = self; 
         (pusher, poppers)
     }
 }

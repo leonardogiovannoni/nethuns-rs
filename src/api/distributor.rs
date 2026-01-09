@@ -290,7 +290,7 @@ pub trait NSPSCDistributor<const N: usize, Ctx: Context>: Distributor<N, Ctx> {
     type Pusher: NSPSCDistributorPusher<N, Ctx>;
     type Popper: NSPSCDistributorPopper<N, Ctx>;
 
-    fn split(self, n: usize) -> (Self::Pusher, Vec<Self::Popper>);
+    fn split(self) -> (Self::Pusher, Vec<Self::Popper>);
 }
 
 impl<const BATCH_SIZE: usize, T, Ctx: Context> NSPSCDistributor<BATCH_SIZE, Ctx>
@@ -302,14 +302,14 @@ where
     type Pusher = ContextWrapper<BATCH_SIZE, T::Pusher, Ctx>;
     type Popper = ContextWrapper<BATCH_SIZE, T::Popper, Ctx>;
 
-    fn split(self, n: usize) -> (Self::Pusher, Vec<Self::Popper>) {
+    fn split(self) -> (Self::Pusher, Vec<Self::Popper>) {
         let inner = self.data.into_inner();
-        let (inner_pusher, inner_poppers) = inner.split(n);
+        let (inner_pusher, inner_poppers) = inner.split();
         let pusher = ContextWrapper {
             ctx: self.ctx.clone(),
             data: RefCell::new(inner_pusher),
         };
-        let mut poppers = Vec::with_capacity(n);
+        let mut poppers = Vec::with_capacity(inner_poppers.len());
         for inner_popper in inner_poppers {
             let popper = ContextWrapper {
                 ctx: self.ctx.clone(),

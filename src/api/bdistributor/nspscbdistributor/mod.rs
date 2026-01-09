@@ -34,5 +34,5 @@ pub trait NSPSCBDistributorPopper<const BATCH_SIZE: usize, T> {
 pub trait NSPSCBDistributor<const BATCH_SIZE: usize, T>: BDistributor<BATCH_SIZE, T> + 'static {
     type Pusher: NSPSCBDistributorPusher<{ BATCH_SIZE }, T> + 'static;
     type Popper: NSPSCBDistributorPopper<{ BATCH_SIZE }, T> + 'static;
-    fn split(self, n: usize) -> (Self::Pusher, Vec<Self::Popper>);
+    fn split(self) -> (Self::Pusher, Vec<Self::Popper>);
 }
