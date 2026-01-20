@@ -3,7 +3,6 @@ use core::cell::UnsafeCell;
 use core::sync::atomic;
 use std::sync::Arc;
 
-use arrayvec::ArrayVec;
 use atomic::{AtomicUsize, Ordering};
 use ringbuf::storage::Heap;
 use ringbuf::traits::Split;
@@ -24,7 +23,7 @@ impl<T> Producer<T> {
         Arc::as_ptr(&self.producer.rb_ref()) as usize
     }
 
-    pub(crate) fn new(producer: CachingProd<Arc<SharedRb<Heap<T>>>>, id: usize) -> Self {
+    pub(crate) fn new(producer: CachingProd<Arc<SharedRb<Heap<T>>>>, _id: usize) -> Self {
         Self { producer }
     }
 }
@@ -51,7 +50,7 @@ impl<T> Consumer<T> {
         Arc::as_ptr(tmp) as usize
     }
 
-    pub(crate) fn new(consumer: CachingCons<Arc<SharedRb<Heap<T>>>>, id: usize) -> Self {
+    pub(crate) fn new(consumer: CachingCons<Arc<SharedRb<Heap<T>>>>, _id: usize) -> Self {
         Self {
             consumer: UnsafeCell::new(consumer),
         }

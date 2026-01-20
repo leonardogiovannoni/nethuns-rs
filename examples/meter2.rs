@@ -1,7 +1,9 @@
-//mod fake_refcell;
+//! Token-based packet meter example.
+//!
+//! This variant exercises recv_token/packet handling by round-robining
+//! payloads across cloned contexts.
 use anyhow::{Result, bail};
-use api::{Flags, Socket, Token};
-use arrayvec::ArrayVec;
+use nethuns_rs::api::{Flags, Socket, Token};
 use clap::{Parser, Subcommand};
 use etherparse::{NetHeaders, PacketHeaders};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -11,7 +13,14 @@ use std::thread;
 use std::time::Duration;
 
 use nethuns_rs::api::Context;
-use nethuns_rs::{af_xdp, api, dpdk, netmap};
+#[cfg(feature = "af-xdp")]
+use nethuns_rs::af_xdp;
+#[cfg(feature = "dpdk")]
+use nethuns_rs::dpdk;
+#[cfg(feature = "netmap")]
+use nethuns_rs::netmap;
+#[cfg(feature = "pcap")]
+use nethuns_rs::pcap;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -20,6 +29,7 @@ struct Args {
     #[clap(short, long)]
     interface: String,
 
+    /// Queue index to bind (defaults to backend choice).
     #[clap(long)]
     queue: Option<usize>,
 
@@ -47,13 +57,21 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Framework {
     /// Use netmap framework.
+    #[cfg(feature = "netmap")]
     Netmap(NetmapArgs),
     /// Use AF_XDP framework.
+    #[cfg(feature = "af-xdp")]
     AfXdp(AfXdpArgs),
+    /// Use DPDK.
+    #[cfg(feature = "dpdk")]
     Dpdk(DpdkArgs),
+    /// Use pcap.
+    #[cfg(feature = "pcap")]
+    Pcap(PcapArgs),
 }
 
 /// Netmap-specific arguments.
+#[cfg(feature = "netmap")]
 #[derive(Parser, Debug)]
 struct NetmapArgs {
     /// Extra buffer size for netmap.
@@ -67,19 +85,18 @@ struct NetmapArgs {
     producer_buffer_size: usize,
 }
 
+#[cfg(feature = "dpdk")]
 #[derive(Parser, Debug)]
 struct DpdkArgs {
-    /// Extra buffer size for netmap.
-
-    // num_mbufs: 8192,
+    /// Number of mbufs to allocate.
     #[clap(long, default_value_t = 8192)]
     num_mbufs: u32,
 
-    // mbuf_cache_size: 250,
+    /// Per-core mbuf cache size.
     #[clap(long, default_value_t = 250)]
     mbuf_cache_size: u32,
 
-    // mbuf_default_buf_size: 2176,
+    /// Default mbuf data size.
     #[clap(long, default_value_t = 2176)]
     mbuf_default_buf_size: u32,
 
@@ -91,6 +108,7 @@ struct DpdkArgs {
 }
 
 /// AF_XDP-specific arguments.
+#[cfg(feature = "af-xdp")]
 #[derive(Parser, Debug)]
 struct AfXdpArgs {
     /// Bind flags for AF_XDP.
@@ -101,7 +119,34 @@ struct AfXdpArgs {
     xdp_flags: u32,
 }
 
-/// Try to parse Ethernet/IP headers using etherparse and return a formatted string.
+/// Pcap-specific arguments.
+#[cfg(feature = "pcap")]
+#[derive(Parser, Debug)]
+struct PcapArgs {
+    /// Snaplen passed to libpcap.
+    #[clap(long, default_value_t = 65535)]
+    snaplen: i32,
+    /// Promiscuous mode.
+    #[clap(long, default_value_t = true)]
+    promiscuous: bool,
+    /// Read timeout in milliseconds (for live captures).
+    #[clap(long, default_value_t = 1)]
+    timeout_ms: i32,
+    /// libpcap immediate mode (deliver packets as soon as they arrive).
+    #[clap(long, default_value_t = true)]
+    immediate: bool,
+    /// Optional BPF filter (tcpdump syntax).
+    #[clap(long)]
+    filter: Option<String>,
+    /// Size of each buffer in the pool (bytes).
+    #[clap(long, default_value_t = 2048)]
+    buffer_size: usize,
+    /// Initial number of buffers to preallocate.
+    #[clap(long, default_value_t = 32)]
+    buffer_count: usize,
+}
+
+/// Parse Ethernet/IP headers and return a short source/destination string.
 fn print_addrs(frame: &[u8]) -> Result<String> {
     let packet_header = PacketHeaders::from_ethernet_slice(frame).unwrap();
     let ip_header = &packet_header
@@ -122,6 +167,7 @@ fn print_addrs(frame: &[u8]) -> Result<String> {
     }
 }
 
+/// Receive tokens and report per-second rates.
 fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
     println!("Test {} started with parameters:", args.interface);
     println!("* interface: {}", args.interface);
@@ -137,7 +183,6 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
     }
     println!("* debug: {}", if args.debug { "ON" } else { "OFF" });
 
-    // Setup a termination flag (triggered on Ctrl+C).
     let term = Arc::new(AtomicBool::new(false));
     {
         let term = term.clone();
@@ -147,30 +192,25 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
         .expect("Error setting Ctrl-C handler");
     }
 
-    // Create per-socket packet counters.
     let totals: Vec<Arc<AtomicU64>> = (0..args.sockets)
         .map(|_| Arc::new(AtomicU64::new(0)))
         .collect();
 
-    // Create a socket for each requested socket.
     let mut sockets = Vec::with_capacity(args.sockets);
     let mut ctxs: Vec<_> = Vec::new();
     for i in 0..args.sockets {
         let portspec = if args.sockets > 1 {
-            // In a multi-socket scenario, append the socket id.
             format!("{}:{}", args.interface, i)
         } else {
             args.interface.clone()
         };
         let socket = Sock::create(&portspec, args.queue, flags.clone())?;
         for _ in 0..64 - 1 {
-            //std::mem::forget(socket.context().clone());
             ctxs.push(socket.context().clone());
         }
         sockets.push(socket);
     }
 
-    // Start the statistics thread.
     let totals_stats = totals.clone();
     let term_stats = term.clone();
     let stats_handle = if let Some(sockid) = args.sockstats {
@@ -199,11 +239,9 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
         })
     };
 
-    // Spawn packet-receiving threads.
     let mut handles = Vec::new();
     const BULK: u64 = 10000;
     println!("Single-threaded mode");
-    // Single-threaded loop over all sockets.
     let totals = Arc::new(totals);
     let term_loop = term.clone();
     let debug = args.debug;
@@ -226,7 +264,6 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
                         Ok(())
                     })();
                     if res.is_err() {
-                        // Optionally handle the error here.
                     }
                 }
             }
@@ -234,7 +271,6 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
     });
     handles.push(handle);
 
-    // Wait for all receiver threads and the stats thread to complete.
     for handle in handles {
         handle.join().expect("Receiver thread panicked");
     }
@@ -246,12 +282,14 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
 pub fn main() -> Result<()> {
     let args = Args::parse();
     match &args.framework {
+        #[cfg(feature = "netmap")]
         Framework::Netmap(netmap_args) => {
             let flags = netmap::NetmapFlags {
                 extra_buf: netmap_args.extra_buf,
             };
             run::<netmap::Sock>(flags, &args)?;
         }
+        #[cfg(feature = "af-xdp")]
         Framework::AfXdp(af_xdp_args) => {
             let flags = af_xdp::AfXdpFlags {
                 bind_flags: af_xdp_args.bind_flags,
@@ -263,6 +301,7 @@ pub fn main() -> Result<()> {
             };
             run::<af_xdp::Sock>(flags, &args)?;
         }
+        #[cfg(feature = "dpdk")]
         Framework::Dpdk(dpdk_args) => {
             let flags = dpdk::DpdkFlags {
                 num_mbufs: dpdk_args.num_mbufs,
@@ -270,6 +309,19 @@ pub fn main() -> Result<()> {
                 mbuf_default_buf_size: dpdk_args.mbuf_default_buf_size as u16,
             };
             run::<dpdk::Sock>(flags, &args)?;
+        }
+        #[cfg(feature = "pcap")]
+        Framework::Pcap(pcap_args) => {
+            let flags = pcap::PcapFlags {
+                snaplen: pcap_args.snaplen,
+                promiscuous: pcap_args.promiscuous,
+                timeout_ms: pcap_args.timeout_ms,
+                immediate: pcap_args.immediate,
+                filter: pcap_args.filter.clone(),
+                buffer_size: pcap_args.buffer_size,
+                buffer_count: pcap_args.buffer_count,
+            };
+            run::<pcap::Sock>(flags, &args)?;
         }
         _ => bail!("Unsupported framework"),
     }

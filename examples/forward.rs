@@ -1,4 +1,8 @@
-use anyhow::{Result, bail};
+//! Simple packet forwarder example.
+//!
+//! Receives frames from an input interface and forwards them to an output
+//! interface using the selected backend.
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::sync::{
     Arc,
@@ -7,21 +11,21 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
-// Import the framework APIs.
-use nethuns_rs::{
-    af_xdp,
-    api::{Flags, Socket},
-    netmap,
-};
+use nethuns_rs::api::Socket;
+#[cfg(feature = "af-xdp")]
+use nethuns_rs::af_xdp;
+#[cfg(feature = "netmap")]
+use nethuns_rs::netmap;
+#[cfg(feature = "pcap")]
+use nethuns_rs::pcap;
 
-/// Command-line arguments.
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
 struct Args {
     /// Input interface name.
     in_if: String,
 
-    // Queue
+    /// Queue index to bind (defaults to backend choice).
     queue: Option<usize>,
 
     /// Output interface name.
@@ -35,12 +39,18 @@ struct Args {
 #[derive(Subcommand, Debug, Clone)]
 enum Framework {
     /// Use netmap framework.
+    #[cfg(feature = "netmap")]
     Netmap(NetmapArgs),
     /// Use AF_XDP framework.
+    #[cfg(feature = "af-xdp")]
     AfXdp(AfXdpArgs),
+    /// Use pcap.
+    #[cfg(feature = "pcap")]
+    Pcap(PcapArgs),
 }
 
 /// Netmap-specific arguments.
+#[cfg(feature = "netmap")]
 #[derive(Parser, Debug, Clone)]
 struct NetmapArgs {
     /// Extra buffer size for netmap.
@@ -53,6 +63,7 @@ struct NetmapArgs {
 }
 
 /// AF_XDP-specific arguments.
+#[cfg(feature = "af-xdp")]
 #[derive(Parser, Debug, Clone)]
 struct AfXdpArgs {
     /// Bind flags for AF_XDP.
@@ -63,11 +74,36 @@ struct AfXdpArgs {
     xdp_flags: u32,
 }
 
+/// Pcap-specific arguments.
+#[cfg(feature = "pcap")]
+#[derive(Parser, Debug, Clone)]
+struct PcapArgs {
+    /// Snaplen passed to libpcap.
+    #[clap(long, default_value_t = 65535)]
+    snaplen: i32,
+    /// Promiscuous mode.
+    #[clap(long, default_value_t = true)]
+    promiscuous: bool,
+    /// Read timeout in milliseconds (for live captures).
+    #[clap(long, default_value_t = 1)]
+    timeout_ms: i32,
+    /// libpcap immediate mode (deliver packets as soon as they arrive).
+    #[clap(long, default_value_t = true)]
+    immediate: bool,
+    /// Optional BPF filter (tcpdump syntax).
+    #[clap(long)]
+    filter: Option<String>,
+    /// Size of each buffer in the pool (bytes).
+    #[clap(long, default_value_t = 2048)]
+    buffer_size: usize,
+    /// Initial number of buffers to preallocate.
+    #[clap(long, default_value_t = 32)]
+    buffer_count: usize,
+}
+
 pub fn main() -> Result<()> {
-    // Parse command-line arguments.
     let args = Args::parse();
 
-    // Set up a termination flag triggered on Ctrl-C.
     let term = Arc::new(AtomicBool::new(false));
     {
         let term = term.clone();
@@ -77,14 +113,15 @@ pub fn main() -> Result<()> {
         .expect("Error setting Ctrl-C handler");
     }
 
-    // Choose the proper framework and run the forwarder.
     match args.framework.clone() {
+        #[cfg(feature = "netmap")]
         Framework::Netmap(netmap_args) => {
             let flags = netmap::NetmapFlags {
                 extra_buf: netmap_args.extra_buf,
             };
             run_forwarder::<netmap::Sock>(flags, &args, term)
         }
+        #[cfg(feature = "af-xdp")]
         Framework::AfXdp(af_xdp_args) => {
             let flags = af_xdp::AfXdpFlags {
                 bind_flags: af_xdp_args.bind_flags,
@@ -96,14 +133,23 @@ pub fn main() -> Result<()> {
             };
             run_forwarder::<af_xdp::Sock>(flags, &args, term)
         }
+        #[cfg(feature = "pcap")]
+        Framework::Pcap(pcap_args) => {
+            let flags = pcap::PcapFlags {
+                snaplen: pcap_args.snaplen,
+                promiscuous: pcap_args.promiscuous,
+                timeout_ms: pcap_args.timeout_ms,
+                immediate: pcap_args.immediate,
+                filter: pcap_args.filter.clone(),
+                buffer_size: pcap_args.buffer_size,
+                buffer_count: pcap_args.buffer_count,
+            };
+            run_forwarder::<pcap::Sock>(flags, &args, term)
+        }
     }
 }
 
-/// The main packet-forwarding routine.
-///
-/// This function creates an input and an output socket, spawns a meter thread,
-/// then enters a loop where it receives a packet on the input interface, and forwards it
-/// to the output interface using a retry loop.
+/// Forward packets from the input socket to the output socket, printing rates.
 fn run_forwarder<Sock>(flags: Sock::Flags, args: &Args, term: Arc<AtomicBool>) -> Result<()>
 where
     Sock: Socket + 'static,
@@ -112,15 +158,12 @@ where
     println!("  Input interface: {}", args.in_if);
     println!("  Output interface: {}", args.out_if);
 
-    // Create the input and output sockets using the selected framework.
     let in_socket = Sock::create(&args.in_if, args.queue, flags.clone())?;
     let out_socket = Sock::create(&args.out_if, args.queue, flags.clone())?;
 
-    // Atomic counters for received and forwarded packets.
     let total_rcv = Arc::new(AtomicU64::new(0));
     let total_fwd = Arc::new(AtomicU64::new(0));
 
-    // Spawn a meter thread that prints packet rates every second.
     {
         let total_rcv = total_rcv.clone();
         let total_fwd = total_fwd.clone();
@@ -143,10 +186,8 @@ where
         });
     }
 
-    // Forwarding loop.
     while !term.load(Ordering::SeqCst) {
-        // Receive a packet from the input socket.
-        let (packet, meta) = match in_socket.recv() {
+        let (packet, _meta) = match in_socket.recv() {
             Ok((p, m)) => (p, m),
             Err(e) => {
                 eprintln!("Receive error: {:?}", e);
@@ -155,20 +196,15 @@ where
         };
         total_rcv.fetch_add(1, Ordering::SeqCst);
 
-        // Forward the packet with a retry loop.
         loop {
             match out_socket.send(&packet) {
-                // On success, exit the retry loop.
                 Ok(_) => break,
-                Err(e) => {
+                Err(_e) => {
                     out_socket.flush();
                 }
             }
         }
         total_fwd.fetch_add(1, Ordering::SeqCst);
-
-        // Release the packet from the input socket.
-        // (Assumes that meta contains a packet identifier for release.)
     }
 
     Ok(())

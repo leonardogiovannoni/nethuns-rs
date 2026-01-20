@@ -4,7 +4,6 @@
 use std::{
     cell::RefCell,
     sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };

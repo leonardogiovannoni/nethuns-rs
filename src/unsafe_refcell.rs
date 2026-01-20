@@ -40,7 +40,7 @@ impl<T> UnsafeRefCell<T> {
         }
 
         UnsafeRef {
-            value: &*self.value.get(),
+            value: unsafe { &*self.value.get() },
             cell: self,
         }
     }
@@ -56,7 +56,7 @@ impl<T> UnsafeRefCell<T> {
         }
 
         UnsafeRefMut {
-            value: &mut *self.value.get(),
+            value: unsafe { &mut *self.value.get() },
             cell: self,
         }
     }

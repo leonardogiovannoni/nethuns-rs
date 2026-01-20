@@ -1,6 +1,8 @@
-//mod fake_refcell;
+//! Packet rate meter example for the nethuns_rs backends.
+//!
+//! This receives packets and prints per-second counters, optionally per socket.
 use anyhow::{Result, bail};
-use api::{Flags, Socket, Token};
+use nethuns_rs::api::{Flags, Socket, Token};
 use clap::{Parser, Subcommand};
 use etherparse::{NetHeaders, PacketHeaders};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -9,7 +11,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use nethuns_rs::{af_xdp, api, dpdk, netmap, pcap};
+#[cfg(feature = "af-xdp")]
+use nethuns_rs::af_xdp;
+#[cfg(feature = "dpdk")]
+use nethuns_rs::dpdk;
+#[cfg(feature = "netmap")]
+use nethuns_rs::netmap;
+#[cfg(feature = "pcap")]
+use nethuns_rs::pcap;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -18,6 +27,7 @@ struct Args {
     #[clap(short, long)]
     interface: String,
 
+    /// Queue index to bind (defaults to backend choice).
     #[clap(long)]
     queue: Option<usize>,
 
@@ -45,15 +55,21 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Framework {
     /// Use netmap framework.
+    #[cfg(feature = "netmap")]
     Netmap(NetmapArgs),
     /// Use AF_XDP framework.
+    #[cfg(feature = "af-xdp")]
     AfXdp(AfXdpArgs),
+    /// Use DPDK.
+    #[cfg(feature = "dpdk")]
     Dpdk(DpdkArgs),
+    /// Use pcap.
+    #[cfg(feature = "pcap")]
     Pcap(PcapArgs),
 }
 
-
 /// Pcap-specific arguments.
+#[cfg(feature = "pcap")]
 #[derive(Parser, Debug)]
 struct PcapArgs {
     /// Snaplen passed to libpcap.
@@ -80,6 +96,7 @@ struct PcapArgs {
 }
 
 /// Netmap-specific arguments.
+#[cfg(feature = "netmap")]
 #[derive(Parser, Debug)]
 struct NetmapArgs {
     /// Extra buffer size for netmap.
@@ -94,18 +111,17 @@ struct NetmapArgs {
 }
 
 #[derive(Parser, Debug)]
+#[cfg(feature = "dpdk")]
 struct DpdkArgs {
-    /// Extra buffer size for netmap.
-
-    // num_mbufs: 8192,
+    /// Number of mbufs to allocate.
     #[clap(long, default_value_t = 8192)]
     num_mbufs: u32,
 
-    // mbuf_cache_size: 250,
+    /// Per-core mbuf cache size.
     #[clap(long, default_value_t = 250)]
     mbuf_cache_size: u32,
 
-    // mbuf_default_buf_size: 2176,
+    /// Default mbuf data size.
     #[clap(long, default_value_t = 2176)]
     mbuf_default_buf_size: u32,
 
@@ -117,6 +133,7 @@ struct DpdkArgs {
 }
 
 /// AF_XDP-specific arguments.
+#[cfg(feature = "af-xdp")]
 #[derive(Parser, Debug)]
 struct AfXdpArgs {
     /// Bind flags for AF_XDP.
@@ -127,7 +144,7 @@ struct AfXdpArgs {
     xdp_flags: u32,
 }
 
-/// Try to parse Ethernet/IP headers using etherparse and return a formatted string.
+/// Parse Ethernet/IP headers and return a short source/destination string.
 fn print_addrs(frame: &[u8]) -> Result<String> {
     let packet_header = PacketHeaders::from_ethernet_slice(frame).unwrap();
     let ip_header = &packet_header
@@ -148,6 +165,7 @@ fn print_addrs(frame: &[u8]) -> Result<String> {
     }
 }
 
+/// Receive packets and report per-second rates.
 fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
     println!("Test {} started with parameters:", args.interface);
     println!("* interface: {}", args.interface);
@@ -163,7 +181,6 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
     }
     println!("* debug: {}", if args.debug { "ON" } else { "OFF" });
 
-    // Setup a termination flag (triggered on Ctrl+C).
     let term = Arc::new(AtomicBool::new(false));
     {
         let term = term.clone();
@@ -173,29 +190,21 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
         .expect("Error setting Ctrl-C handler");
     }
 
-    // Create per-socket packet counters.
     let totals: Vec<Arc<AtomicU64>> = (0..args.sockets)
         .map(|_| Arc::new(AtomicU64::new(0)))
         .collect();
 
-    // Create a socket for each requested socket.
     let mut sockets = Vec::with_capacity(args.sockets);
     for i in 0..args.sockets {
         let portspec = if args.sockets > 1 {
-            // In a multi-socket scenario, append the socket id.
-            //format!("{}:{}", args.interface, i)
             args.interface.clone()
         } else {
             args.interface.clone()
         };
         let socket = Sock::create(&portspec, Some(i) /*args.queue*/, flags.clone())?;
-        // for _ in 0..32 - 1 {
-        //     std::mem::forget(socket.context().clone());
-        // }
         sockets.push(socket);
     }
 
-    // Start the statistics thread.
     let totals_stats = totals.clone();
     let term_stats = term.clone();
     let stats_handle = if let Some(sockid) = args.sockstats {
@@ -224,17 +233,14 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
         })
     };
 
-    // Spawn packet-receiving threads.
     let mut handles = Vec::new();
     const BULK: u64 = 10000;
     if args.multithreading {
-        // One thread per socket.
         for (i, socket) in sockets.into_iter().enumerate() {
             let term_thread = term.clone();
             let counter = totals[i].clone();
             let debug = args.debug;
             let handle = {
-                //let ctx = socket.context().clone();
                 thread::spawn(move || {
                     let mut local_counter = 0;
                     while !term_thread.load(Ordering::SeqCst) {
@@ -254,7 +260,6 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
                             Some(())
                         })();
                         if res.is_none() {
-                            // Optionally handle the error here.
                         }
                     }
                 })
@@ -263,7 +268,6 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
         }
     } else {
         println!("Single-threaded mode");
-        // Single-threaded loop over all sockets.
         let totals = Arc::new(totals);
         let term_loop = term.clone();
         let debug = args.debug;
@@ -274,15 +278,6 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
                     for (i, socket) in sockets.iter_mut().enumerate() {
                         let res: Option<()> = (|| {
                             let (packet, meta) = socket.recv().ok()?;
-                            // let tmp = socket.recv();
-                            // let (packet, meta) = match tmp {
-                            //     Ok((packet, meta)) => (packet, meta),
-                            //     Err(err) => {
-                            //         println!("{:?}", err);
-                            //         return None;
-                            //     }
-                            // };
-
                             local_counters[i] += 1;
                             if local_counters[i] == BULK {
                                 totals[i].fetch_add(local_counters[i], Ordering::Relaxed);
@@ -296,7 +291,6 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
                             Some(())
                         })();
                         if res.is_none() {
-                            // Optionally handle the error here.
                         }
                     }
                 }
@@ -305,7 +299,6 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
         handles.push(handle);
     }
 
-    // Wait for all receiver threads and the stats thread to complete.
     for handle in handles {
         handle.join().expect("Receiver thread panicked");
     }
@@ -317,12 +310,14 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
 pub fn main() -> Result<()> {
     let args = Args::parse();
     match &args.framework {
+        #[cfg(feature = "netmap")]
         Framework::Netmap(netmap_args) => {
             let flags = netmap::NetmapFlags {
                 extra_buf: netmap_args.extra_buf,
             };
             run::<netmap::Sock>(flags, &args)?;
         }
+        #[cfg(feature = "af-xdp")]
         Framework::AfXdp(af_xdp_args) => {
             let flags = af_xdp::AfXdpFlags {
                 bind_flags: af_xdp_args.bind_flags,
@@ -334,6 +329,7 @@ pub fn main() -> Result<()> {
             };
             run::<af_xdp::Sock>(flags, &args)?;
         }
+        #[cfg(feature = "dpdk")]
         Framework::Dpdk(dpdk_args) => {
             let flags = dpdk::DpdkFlags {
                 num_mbufs: dpdk_args.num_mbufs,
@@ -342,6 +338,7 @@ pub fn main() -> Result<()> {
             };
             run::<dpdk::Sock>(flags, &args)?;
         }
+        #[cfg(feature = "pcap")]
         Framework::Pcap(pcap_args) => {
             let flags = pcap::PcapFlags {
                 snaplen: pcap_args.snaplen,

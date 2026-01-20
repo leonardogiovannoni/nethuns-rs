@@ -57,53 +57,8 @@ impl api::Context for Ctx {
 }
 
 struct PacketHeader {
-    // index: u32,
-    // len: u16,
-    // caplen: u16,
     ts: TimeVal,
 }
-
-// #[must_use]
-// pub struct Tok {
-//    idx: api::BufferRef,
-//    len: u32,
-//    buffer_pool: u32,
-//}
-//
-//impl Tok {
-//    fn new(idx: u32, buffer_pool: u32, len: u32) -> ManuallyDrop<Self> {
-//        let idx = api::BufferRef::from(idx as usize);
-//        ManuallyDrop::new(Self {
-//            idx,
-//            len,
-//            buffer_pool,
-//        })
-//    }
-//}
-
-//impl api::Token for Tok {
-//    type Context = Ctx;
-//
-//    fn size(&self) -> u32 {
-//        self.len
-//    }
-//
-//    fn pool_id(&self) -> u32 {
-//        self.buffer_pool
-//    }
-//    
-//    fn buffer_desc(&self) -> api::BufferDesc {
-//        api::BufferDesc(self.idx.0)
-//    }
-//}
-
-// impl Drop for Tok {
-//     fn drop(&mut self) {
-//         if !std::thread::panicking() {
-//             panic!("PacketToken must be used");
-//         }
-//     }
-// }
 
 pub struct Sock {
     tx: RefCell<Transmitter>,

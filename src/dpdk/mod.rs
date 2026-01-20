@@ -37,7 +37,6 @@ impl Ctx {
     fn new(nbufs: usize) -> (Self, mpsc::Consumer<api::BufferDesc>) {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let (producer, cons) = mpsc::channel(nbufs);
-        // S::create(nbufs, strategy_args);
         let res = Self {
             producer: RefCell::new(producer),
             index: COUNTER.fetch_add(1, Ordering::SeqCst),
@@ -46,41 +45,7 @@ impl Ctx {
     }
 }
 
-// pub struct Tok {
-//     idx: api::BufferDesc,
-//     pool_id: u32,
-// }
-// 
-// impl Tok {
-//     fn new(idx: api::BufferDesc, pool_id: u32) -> ManuallyDrop<Self> {
-//         ManuallyDrop::new(Self { idx, pool_id })
-//     }
-// }
-// 
-// impl api::Token for Tok {
-//     type Context = Ctx;
-// 
-//     fn buffer_desc(&self) -> api::BufferDesc {
-//         self.idx
-//     }
-// 
-//     fn size(&self) -> u32 {
-//         let idx: usize = self.idx.into();
-//         let ptr = idx as *mut rte_mbuf;
-//         unsafe { (*ptr).__bindgen_anon_2.__bindgen_anon_1.data_len as u32 }
-//     }
-// 
-//     fn pool_id(&self) -> u32 {
-//         self.pool_id
-//     }
-//     
-// }
-
-
-
 impl api::Context for Ctx {
-    // type Token = Tok;
-
     fn pool_id(&self) -> u32 {
         self.index
     }

@@ -1,32 +1,35 @@
-//! pktgen_tx.rs – A minimal high‑speed traffic generator that mimics the
-//! behaviour of **netmap/pkt-gen -f tx** (transmit mode) but is written in
-//! safe Rust on top of the `nethuns_rs` unified I/O API.  
+//! Packet generator example built on the `nethuns_rs` unified I/O API.
 //!
-//! * Compile with the same features you use for the `nethuns_rs` crate — e.g.:
-//!   ```bash
-//!   cargo run --release --features netmap -- \
-//!       -i eth0 -s 4 --multithreading --framework netmap \
-//!       --dst-mac 11:22:33:44:55:66 --dst-ip 10.0.0.2 \
-//!       --src-ip 10.0.0.1 --len 60 -r 10_000_000
-//!   ```
+//! This emits UDP/IPv4 frames at a requested rate using the selected backend
+//! (netmap, AF_XDP, DPDK, or pcap). Enable the same Cargo features you use
+//! for the library.
 //!
-//! * Author: <you>
-//! * Licence: BSD‑3‑Clause (match `nethuns_rs`)
+//! Example:
+//! ```bash
+//! cargo run --release --features netmap -- \
+//!     -i eth0 -s 4 --multithreading --framework netmap \
+//!     --dst-mac 11:22:33:44:55:66 --dst-ip 10.0.0.2 \
+//!     --src-ip 10.0.0.1 --len 60 -r 10_000_000
+//! ```
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use etherparse::PacketBuilder;
-use nethuns_rs::{af_xdp, api::Socket, dpdk, netmap};
+use nethuns_rs::api::Socket;
+#[cfg(feature = "af-xdp")]
+use nethuns_rs::af_xdp;
+#[cfg(feature = "dpdk")]
+use nethuns_rs::dpdk;
+#[cfg(feature = "netmap")]
+use nethuns_rs::netmap;
+#[cfg(feature = "pcap")]
+use nethuns_rs::pcap;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-
-//──────────────────────────────────────────────────────────────────────────────
-// CLI
-//──────────────────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug, Clone)]
 #[clap(author, version, about, long_about = None)]
@@ -47,7 +50,7 @@ struct Args {
     #[clap(short = 'm', long)]
     multithreading: bool,
 
-    /// Per‑socket statistics (print packets/s for *sockid*).
+    /// Per-socket statistics (print packets/s for sockid).
     #[clap(short = 'S', long)]
     sockstats: Option<usize>,
 
@@ -55,12 +58,11 @@ struct Args {
     #[clap(short, long)]
     debug: bool,
 
-    // ───────────────────────────────── tx specific ──────────────────────────
     /// Total number of packets to send (0 = unlimited).
     #[clap(short = 'n', long, default_value_t = 0)]
     count: u64,
 
-    /// Desired *approximate* packet rate (pps). 0 = flat‑out.
+    /// Desired approximate packet rate (pps). 0 = flat-out.
     #[clap(short = 'r', long, default_value_t = 0)]
     rate: u64,
 
@@ -68,7 +70,7 @@ struct Args {
     #[clap(short = 'l', long, default_value_t = 60)]
     len: usize,
 
-    /// Source MAC address (default: interface MAC).
+    /// Source MAC address (default: 00:00:00:00:00:00).
     #[clap(long)]
     src_mac: Option<String>,
 
@@ -92,26 +94,29 @@ struct Args {
     #[clap(long, default_value_t = 1234)]
     dst_port: u16,
 
-    /// Underlying packet‑I/O framework.
+    /// Underlying packet-IO framework.
     #[clap(subcommand)]
     framework: Framework,
 }
 
 #[derive(Subcommand, Debug, Clone)]
 enum Framework {
-    /// Use **netmap**.
+    /// Use netmap.
+    #[cfg(feature = "netmap")]
     Netmap(NetmapArgs),
-    /// Use **AF_XDP**.
+    /// Use AF_XDP.
+    #[cfg(feature = "af-xdp")]
     AfXdp(AfXdpArgs),
-    /// Use **DPDK**.
+    /// Use DPDK.
+    #[cfg(feature = "dpdk")]
     Dpdk(DpdkArgs),
-    // Use **pcap** (for testing / low speed).
+    /// Use pcap (testing or low speed).
+    #[cfg(feature = "pcap")]
     Pcap(PcapArgs),
 }
 
-
-// ───────────────────────── pcap specific ──────────────────────────────
 #[derive(Parser, Debug, Clone)]
+#[cfg(feature = "pcap")]
 struct PcapArgs {
     /// Snaplen passed to libpcap.
     #[clap(long, default_value_t = 65535)]
@@ -136,8 +141,8 @@ struct PcapArgs {
     buffer_count: usize,
 }
 
-// ───────────────────────── netmap specific ────────────────────────────
 #[derive(Parser, Debug, Clone)]
+#[cfg(feature = "netmap")]
 struct NetmapArgs {
     #[clap(long, default_value_t = 1024)]
     extra_buf: u32,
@@ -147,8 +152,8 @@ struct NetmapArgs {
     producer_buffer_size: usize,
 }
 
-// ───────────────────────── dpdk specific ──────────────────────────────
 #[derive(Parser, Debug, Clone)]
+#[cfg(feature = "dpdk")]
 struct DpdkArgs {
     #[clap(long, default_value_t = 8192)]
     num_mbufs: u32,
@@ -162,8 +167,8 @@ struct DpdkArgs {
     producer_buffer_size: usize,
 }
 
-// ───────────────────────── af_xdp specific ────────────────────────────
 #[derive(Parser, Debug, Clone)]
+#[cfg(feature = "af-xdp")]
 struct AfXdpArgs {
     #[clap(long, default_value_t = 0)]
     bind_flags: u16,
@@ -171,10 +176,7 @@ struct AfXdpArgs {
     xdp_flags: u32,
 }
 
-//──────────────────────────────────────────────────────────────────────────────
-// Helpers
-//──────────────────────────────────────────────────────────────────────────────
-
+/// Parse a MAC address in "aa:bb:cc:dd:ee:ff" or "aa-bb-cc-dd-ee-ff" form.
 fn mac_from_str(s: &str) -> Result<[u8; 6]> {
     let parts: Vec<u8> = s
         .split([':', '-'])
@@ -189,21 +191,21 @@ fn mac_from_str(s: &str) -> Result<[u8; 6]> {
 fn ipv4_from_str(s: &str) -> Result<[u8; 4]> {
     Ok(Ipv4Addr::from_str(s)?.octets())
 }
-/// Build a single UDP/IPv4/Ethernet packet template of the desired `len`.
+
+/// Build a UDP/IPv4/Ethernet packet template of the requested length.
 fn build_packet_template(args: &Args) -> Result<Vec<u8>> {
     let src_mac = args
         .src_mac
         .as_deref()
         .map(mac_from_str)
         .transpose()?
-        .unwrap_or([0, 0, 0, 0, 0, 0]); // real MAC lookup omitted
+        .unwrap_or([0, 0, 0, 0, 0, 0]);
     let dst_mac = mac_from_str(&args.dst_mac)?;
     let src_ip = ipv4_from_str(&args.src_ip)?;
     let dst_ip = ipv4_from_str(&args.dst_ip)?;
 
-    // Build headers with etherparse (checksums auto‑calculated).
     let builder = PacketBuilder::ethernet2(src_mac, dst_mac)
-        .ipv4(src_ip, dst_ip, 64) // ttl
+        .ipv4(src_ip, dst_ip, 64)
         .udp(args.src_port, args.dst_port);
 
     let header_len = builder.size(0);
@@ -222,25 +224,22 @@ fn build_packet_template(args: &Args) -> Result<Vec<u8>> {
     Ok(packet)
 }
 
-//──────────────────────────────────────────────────────────────────────────────
-// Core logic
-//──────────────────────────────────────────────────────────────────────────────
+/// Flush after this many packets to keep the Tx ring moving.
+const FLUSH_EVERY: usize = 64;
 
-const FLUSH_EVERY: usize = 64; // how many packets before a flush
-
+/// Run a transmit loop using the selected socket backend.
 fn run_tx<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
     println!(
-        "pktgen_tx – interface {} ({} sockets, {})",
+        "pktgen_tx - interface {} ({} sockets, {})",
         args.interface,
         args.sockets,
         if args.multithreading {
             "multithreaded"
         } else {
-            "single‑threaded"
+            "single-threaded"
         }
     );
 
-    // Ctrl‑C terminator.
     let term = Arc::new(AtomicBool::new(false));
     {
         let term = term.clone();
@@ -249,37 +248,32 @@ fn run_tx<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()>
         })?;
     }
 
-    // Counters for stats.
     let totals: Vec<_> = (0..args.sockets)
         .map(|_| Arc::new(AtomicU64::new(0)))
         .collect();
 
-    // Pre‑built packet template so threads don’t allocate.
     let pkt_template = build_packet_template(args)?;
 
-    // Open sockets (one per queue / per socket).
     let mut sockets = Vec::with_capacity(args.sockets);
     for i in 0..args.sockets {
         let portspec = if args.sockets > 1 {
-            args.interface.clone() // you might want to append ":{i}" depending on driver
+            args.interface.clone()
         } else {
             args.interface.clone()
         };
         let socket = Sock::create(&portspec, args.queue.or(Some(i)), flags.clone())?;
-        // Clone contexts to avoid contention (see nethuns docs)
         sockets.push(socket);
     }
 
-    // Stats printer.
     let totals_stats = totals.clone();
     let term_stats = term.clone();
     let stats_handle = if let Some(sockid) = args.sockstats {
         thread::spawn(move || {
-            let mut prev = 0u64;
+            let mut _prev = 0u64;
             while !term_stats.load(Ordering::SeqCst) {
                 thread::sleep(Duration::from_secs(1));
                 let cur = totals_stats[sockid].load(Ordering::SeqCst);
-                prev = cur;
+                _prev = cur;
             }
         })
     } else {
@@ -294,10 +288,9 @@ fn run_tx<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()>
         })
     };
 
-    // Worker(s).
     let mut handles = Vec::new();
 
-    let rate_pps = args.rate; // 0 == unlimited
+    let rate_pps = args.rate;
     let spacing = if rate_pps > 0 {
         Some(Duration::from_secs_f64(1.0 / rate_pps as f64))
     } else {
@@ -305,7 +298,7 @@ fn run_tx<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()>
     };
 
     if args.multithreading {
-        for (sock_id, mut sock) in sockets.into_iter().enumerate() {
+        for (sock_id, sock) in sockets.into_iter().enumerate() {
             let term = term.clone();
             let counter = totals[sock_id].clone();
             let pkt = pkt_template.clone();
@@ -321,7 +314,6 @@ fn run_tx<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()>
                         break;
                     }
 
-                    // simple rate limiting
                     if let Some(d) = spacing {
                         let now = Instant::now();
                         if now < next_ts {
@@ -338,20 +330,16 @@ fn run_tx<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()>
                                 let _ = sock.flush();
                                 local_queue = 0;
                             }
-                            // aggregated counters
                             counter.fetch_add(1, Ordering::Relaxed);
                         }
-                        Err(err) => {
-                        }
+                        Err(_err) => {}
                     }
                 }
-                // final flush
                 let _ = sock.flush();
             });
             handles.push(handle);
         }
     } else {
-        // single‑thread covering all sockets
         let term = term.clone();
         let totals_ref = totals.clone();
         let args = args.clone();
@@ -382,12 +370,10 @@ fn run_tx<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()>
                                 let _ = sock.flush();
                             }
                         }
-                        Err(err) => {
-                        }
+                        Err(_err) => {}
                     }
                 }
             }
-            // final flushes
             for sock in &mut sockets {
                 let _ = sock.flush();
             }
@@ -395,7 +381,6 @@ fn run_tx<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()>
         handles.push(handle);
     }
 
-    // Wait for workers & stats.
     for h in handles {
         h.join().expect("worker panicked");
     }
@@ -404,20 +389,18 @@ fn run_tx<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()>
     Ok(())
 }
 
-//──────────────────────────────────────────────────────────────────────────────
-// Entrypoint
-//──────────────────────────────────────────────────────────────────────────────
-
 fn main() -> Result<()> {
     let args = Args::parse();
 
     match &args.framework {
+        #[cfg(feature = "netmap")]
         Framework::Netmap(nm) => {
             let flags = netmap::NetmapFlags {
                 extra_buf: nm.extra_buf,
             };
             run_tx::<netmap::Sock>(flags, &args)?;
         }
+        #[cfg(feature = "af-xdp")]
         Framework::AfXdp(xdp) => {
             let flags = af_xdp::AfXdpFlags {
                 bind_flags: xdp.bind_flags,
@@ -429,6 +412,7 @@ fn main() -> Result<()> {
             };
             run_tx::<af_xdp::Sock>(flags, &args)?;
         }
+        #[cfg(feature = "dpdk")]
         Framework::Dpdk(dp) => {
             let flags = dpdk::DpdkFlags {
                 num_mbufs: dp.num_mbufs,
@@ -437,8 +421,9 @@ fn main() -> Result<()> {
             };
             run_tx::<dpdk::Sock>(flags, &args)?;
         }
+        #[cfg(feature = "pcap")]
         Framework::Pcap(pcap) => {
-            let flags = nethuns_rs::pcap::PcapFlags {
+            let flags = pcap::PcapFlags {
                 snaplen: pcap.snaplen,
                 promiscuous: pcap.promiscuous,
                 timeout_ms: pcap.timeout_ms,
@@ -447,7 +432,7 @@ fn main() -> Result<()> {
                 buffer_size: pcap.buffer_size,
                 buffer_count: pcap.buffer_count,
             };
-            run_tx::<nethuns_rs::pcap::Sock>(flags, &args)?;
+            run_tx::<pcap::Sock>(flags, &args)?;
         }
     }
     Ok(())

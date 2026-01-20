@@ -9,6 +9,7 @@ pub enum Error {
     #[error("Can't allocate memory")]
     NoMemory,
     #[error("{0}")]
+    #[cfg(feature = "netmap")]
     Netmap(#[from] netmap_rs::errors::Error),
     #[error("Too big packet: {0}")]
     TooBigPacket(usize),
@@ -16,6 +17,7 @@ pub enum Error {
     Generic(#[from] io::Error),
     //#[error("{0}")]
     #[error("{0}")]
+    #[cfg(feature = "pcap")]
     Pcap(#[from] pcap::Error),
     //Temporary(#[from] anyhow::Error),
     #[error("unknown error")]

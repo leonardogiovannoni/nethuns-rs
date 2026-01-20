@@ -187,40 +187,6 @@ fn complete_tx(xsk: &Sock) -> io::Result<()> {
     Ok(())
 }
 
-// pub struct Tok {
-//     idx: api::BufferDesc,
-//     len: u32,
-//     buffer_pool: u32,
-// }
-// 
-// impl api::Token for Tok {
-//     type Context = Ctx;
-// 
-//     fn buffer_desc(&self) -> api::BufferDesc {
-//         self.idx
-//     }
-// 
-//     fn size(&self) -> u32 {
-//         self.len
-//     }
-// 
-//     fn pool_id(&self) -> u32 {
-//         self.buffer_pool
-//     }
-// }
-// 
-// impl Tok {
-//     fn new(idx: u64, buffer_pool: u32, len: u32) -> ManuallyDrop<Self> {
-//         let idx: usize = idx.try_into().unwrap();
-//         let idx = api::BufferDesc::from(idx);
-//         ManuallyDrop::new(Self {
-//             idx,
-//             len,
-//             buffer_pool,
-//         })
-//     }
-// }
-
 /// Wraps an AF_XDP socket.
 pub struct Sock {
     ctx: Ctx,
@@ -236,7 +202,6 @@ impl Sock {
     fn recv_inner(&self, slot: XdpDescData) -> Result<(Token, Meta)> {
         let offset = slot.offset;
         let len = slot.len;
-        // let options = slot.options;
         
         let mut stats = self.stats.get();
         stats.rx_bytes += len as u64;
@@ -244,7 +209,6 @@ impl Sock {
         self.stats.set(stats);
 
         let buffer_pool = self.ctx.index;
-        // let token = Token::new(offset, buffer_pool, len);
         let token = ManuallyDrop::new(Token {
             idx: api::BufferDesc::from(offset as usize),
             len,
@@ -286,49 +250,6 @@ impl Sock {
 
         Ok(())
     }
-
-    // fn print_stats(&self) {
-    //     fn calc_period(r: &StatsRecord, p: &StatsRecord) -> f64 {
-    //         let period = r.timestamp - p.timestamp;
-    //         if period > 0 {
-    //             (period as f64) / 1e9
-    //         } else {
-    //             0.0
-    //         }
-    //     }
-    //     let stats_rec = &self.stats.get();
-    //     let stats_prev = &self.prev_stats.get();
-    //     let mut period = calc_period(stats_rec, stats_prev);
-    //     if period == 0.0 {
-    //         period = 1.0;
-    //     }
-    //     let rx_pkts = stats_rec.rx_packets - stats_prev.rx_packets;
-    //     let rx_pps = rx_pkts as f64 / period;
-    //     let rx_bytes = stats_rec.rx_bytes - stats_prev.rx_bytes;
-    //     let rx_bps = (rx_bytes * 8) as f64 / period / 1_000_000.0;
-    //     println!(
-    //         "AF_XDP RX: {:11} pkts ({:10.0} pps) {:11} Kbytes ({:6.0} Mbits/s) period:{}",
-    //         stats_rec.rx_packets,
-    //         rx_pps,
-    //         stats_rec.rx_bytes / 1000,
-    //         rx_bps,
-    //         period
-    //     );
-    //
-    //     let tx_pkts = stats_rec.tx_packets - stats_prev.tx_packets;
-    //     let tx_pps = tx_pkts as f64 / period;
-    //     let tx_bytes = stats_rec.tx_bytes - stats_prev.tx_bytes;
-    //     let tx_bps = (tx_bytes * 8) as f64 / period / 1_000_000.0;
-    //     println!(
-    //         "       TX: {:11} pkts ({:10.0} pps) {:11} Kbytes ({:6.0} Mbits/s) period:{}",
-    //         stats_rec.tx_packets,
-    //         tx_pps,
-    //         stats_rec.tx_bytes / 1000,
-    //         tx_bps,
-    //         period
-    //     );
-    //     println!();
-    // }
 }
 
 impl api::Socket for Sock {
@@ -440,19 +361,6 @@ pub struct AfXdpFlags {
 }
 
 impl api::Flags for AfXdpFlags {}
-
-// fn gettime() -> u64 {
-//     let mut ts = libc::timespec {
-//         tv_sec: 0,
-//         tv_nsec: 0,
-//     };
-//     let res = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-//     if res < 0 {
-//         eprintln!("Error with clock_gettime");
-//         std::process::exit(1);
-//     }
-//     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
-// }
 
 pub fn alloc_page_aligned(size: usize) -> io::Result<NonNull<u8>> {
     if size == 0 {
