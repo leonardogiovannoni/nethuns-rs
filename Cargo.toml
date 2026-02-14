@@ -26,6 +26,7 @@ aya = { version = "0.13.1", optional = true }
 thiserror = "2.0.12"
 triomphe = "0.1.14"
 flume = "0.11.1"
+crossbeam-queue = "0.3.11"
 pcap = { version = "2.3.0", optional = true }
 
 #libxdp-sys = { path = "libxdp-sys" }
@@ -63,3 +64,6 @@ name = "forward_mt"
 
 [[example]]
 name = "pkt-gen"
+
+[[example]]
+name = "bench_queue"
