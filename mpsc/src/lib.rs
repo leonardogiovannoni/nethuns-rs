@@ -50,7 +50,7 @@ impl<T> Consumer<T> {
     pub fn cached(&mut self) -> &mut ArrayVec<usize, 1024> {
         &mut self.cached
     }
-    
+
     pub fn available_len(&self) -> usize {
         self.cached.len()
     }
@@ -129,9 +129,21 @@ impl<T> Producer<T> {
         }
         // SAFETY: we just initialized the inner if it didn't exist
         let inner = unsafe { guard.as_mut().unwrap_unchecked() };
-        // Convert to blocks of 16; any remainder <16 is discarded (as before)
-        let iter = to_simd(self.local_batch.drain(..));
-        let _ = inner.elem.enqueue_many(iter);
+
+        let val_opt = {
+            let mut iter = to_simd(self.local_batch.iter().cloned());
+            iter.next()
+        };
+
+        if let Some(val) = val_opt {
+            loop {
+                if inner.elem.enqueue_many(iter::once(val)) > 0 {
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+            self.local_batch.clear();
+        }
     }
 }
 
@@ -148,12 +160,14 @@ impl<T> Clone for Producer<T> {
 
 impl<T> Drop for Producer<T> {
     fn drop(&mut self) {
-        self.flush(); 
+        self.flush();
         // We are basically delaying real drop to the entry of the data structure to
         // the destruction of the last global reference to the producer (i.e., when `per_thread`
         // arc count goes to zero).
     }
 }
+
+
 
 fn to_simd<I: Iterator<Item = usize>>(mut iter: I) -> impl Iterator<Item = SimdUsize16> {
     iter::from_fn(move || {
@@ -186,7 +200,7 @@ pub fn channel<T>(size: usize) -> (Producer<T>, Consumer<T>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_tls_fastpath() {
         const LEN: usize = 1024 * 1024 * 4; // multiple of 16
