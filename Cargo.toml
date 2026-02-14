@@ -14,7 +14,7 @@ netmap-rs = { path = "netmap_rs", optional = true }
 #netmap-sys = { path = "../netmap-rs/netmap-sys" }
 nix = "0.29.0"
 num_cpus = "1.16.0"
-mpsc = { path = "mpsc" }
+mpsc = { path = "mpsc", default-features = false }
 libxdp-sys = { path = "libxdp-sys", optional = true }
 ringbuf = "0.4.7"
 dpdk-sys = { path = "dpdk-sys", optional = true }
@@ -45,6 +45,7 @@ af-xdp = ["dep:aya", "dep:libbpf-sys", "dep:libxdp-sys"]
 dpdk = ["dep:dpdk-sys"]
 netmap = ["dep:netmap-rs"]
 pcap = ["dep:pcap"]
+simd = ["mpsc/simd"]
 
 
 
