@@ -1,27 +1,20 @@
-use crate::af_xdp::{resultify, UmemArea, RX_BATCH_SIZE};
+use crate::af_xdp::{RX_BATCH_SIZE, UmemArea, resultify};
 use arrayvec::ArrayVec;
 use aya::maps::Map;
 use aya::programs::xdp::XdpLinkId;
 use aya::programs::{Xdp, XdpFlags};
-use aya::{include_bytes_aligned, Ebpf};
+use aya::{Ebpf, include_bytes_aligned};
 use libxdp_sys::{
-    xdp_desc, xsk_prod_nb_free, xsk_ring_cons, xsk_ring_cons__comp_addr, xsk_ring_cons__peek,
-    xsk_ring_cons__release, xsk_ring_cons__rx_desc, xsk_ring_prod, xsk_ring_prod__fill_addr,
-    xsk_ring_prod__reserve, xsk_ring_prod__submit, xsk_ring_prod__tx_desc, xsk_socket,
-    xsk_socket__create, xsk_socket__delete, xsk_socket__fd, xsk_socket__update_xskmap,
-    xsk_socket_config, xsk_umem, xsk_umem__create, xsk_umem__delete,
-    XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD,
+    XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD, xdp_desc, xsk_prod_nb_free, xsk_ring_cons,
+    xsk_ring_cons__comp_addr, xsk_ring_cons__peek, xsk_ring_cons__release, xsk_ring_cons__rx_desc,
+    xsk_ring_prod, xsk_ring_prod__fill_addr, xsk_ring_prod__reserve, xsk_ring_prod__submit,
+    xsk_ring_prod__tx_desc, xsk_socket, xsk_socket__create, xsk_socket__delete, xsk_socket__fd,
+    xsk_socket__update_xskmap, xsk_socket_config, xsk_umem, xsk_umem__create, xsk_umem__delete,
 };
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::ptr::NonNull;
-use std::{
-    collections::VecDeque,
-    ffi::CString,
-    mem::zeroed,
-    ptr,
-};
-
+use std::{collections::VecDeque, ffi::CString, mem::zeroed, ptr};
 
 pub struct Umem {
     inner: NonNull<xsk_umem>,
@@ -143,7 +136,6 @@ pub struct XskSocket {
 }
 
 unsafe impl Send for XskSocket {}
-
 
 static DEFAULT_PROG: &[u8] = include_bytes_aligned!("../../prog.o");
 

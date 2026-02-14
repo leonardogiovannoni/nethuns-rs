@@ -67,12 +67,12 @@ pub(crate) unsafe fn init_port(port: u16, pool: *mut rte_mempool) -> io::Result<
 //     }
 //     None
 // }
-// 
+//
 // struct StderrGuard {
 //     saved_fd: RawFd,
 //     std_err_lock: StderrLock<'static>,
 // }
-// 
+//
 // impl Drop for StderrGuard {
 //     fn drop(&mut self) {
 //         unsafe {
@@ -82,7 +82,7 @@ pub(crate) unsafe fn init_port(port: u16, pool: *mut rte_mempool) -> io::Result<
 //         }
 //     }
 // }
-// 
+//
 // fn redirect_stderr_to_null() -> io::Result<StderrGuard> {
 //     let std_err_lock = std::io::stderr().lock();
 //     unsafe {
@@ -91,7 +91,7 @@ pub(crate) unsafe fn init_port(port: u16, pool: *mut rte_mempool) -> io::Result<
 //         if saved_fd < 0 {
 //             return Err(io::Error::last_os_error());
 //         }
-// 
+//
 //         // Open /dev/null.
 //         let devnull = CString::new("/dev/null").unwrap();
 //         let fd_devnull = libc::open(devnull.as_ptr(), libc::O_WRONLY);
@@ -99,17 +99,17 @@ pub(crate) unsafe fn init_port(port: u16, pool: *mut rte_mempool) -> io::Result<
 //             libc::close(saved_fd);
 //             return Err(io::Error::last_os_error());
 //         }
-// 
+//
 //         // Redirect stderr to /dev/null.
 //         if libc::dup2(fd_devnull, libc::STDERR_FILENO) < 0 {
 //             libc::close(saved_fd);
 //             libc::close(fd_devnull);
 //             return Err(io::Error::last_os_error());
 //         }
-// 
+//
 //         // Close the extra file descriptor.
 //         libc::close(fd_devnull);
-// 
+//
 //         Ok(StderrGuard {
 //             saved_fd,
 //             std_err_lock,

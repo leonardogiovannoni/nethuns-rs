@@ -2,10 +2,10 @@
 
 use std::fmt::Debug;
 
+use super::Result;
 use super::context::Context;
 use super::metadata::Metadata;
 use super::token::{Payload, Token};
-use super::Result;
 
 /// Trait for backend-specific socket configuration flags.
 pub trait Flags: Clone + Debug {}

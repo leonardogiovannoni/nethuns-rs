@@ -1,6 +1,6 @@
 mod wrapper;
-use crate::api::{self, Token};
 use crate::api::Result;
+use crate::api::{self, Token};
 use crate::errors::Error;
 use libc::{self, _SC_PAGESIZE, sysconf};
 use std::alloc::{self, Layout};
@@ -51,7 +51,7 @@ impl Ctx {
 }
 
 impl api::Context for Ctx {
-//    type Token = Tok;
+    //    type Token = Tok;
 
     fn release(&self, buf_idx: api::BufferDesc) {
         self.producer.borrow_mut().push(buf_idx);
@@ -202,7 +202,7 @@ impl Sock {
     fn recv_inner(&self, slot: XdpDescData) -> Result<(Token, Meta)> {
         let offset = slot.offset;
         let len = slot.len;
-        
+
         let mut stats = self.stats.get();
         stats.rx_bytes += len as u64;
         stats.rx_packets += 1;
