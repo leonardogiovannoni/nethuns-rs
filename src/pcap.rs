@@ -3,9 +3,7 @@
 
 use std::{
     cell::RefCell,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use pcap::{Active, Capture, Device, Offline, Packet};
@@ -157,7 +155,8 @@ impl Socket for Sock {
             caplen: pkt.header.caplen,
         };
 
-        let res = vec![0u8; ctx.buf_capacity].into_boxed_slice();
+        let mut res = vec![0u8; ctx.buf_capacity].into_boxed_slice();
+        res[..len].copy_from_slice(data);
         let ptr = Box::into_raw(res) as *mut u8;
         let buf_desc = BufferDesc(ptr as usize);
         let token = Token::new(buf_desc, ctx.pool_id(), len as u32);
