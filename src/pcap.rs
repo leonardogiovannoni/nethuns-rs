@@ -3,6 +3,7 @@
 
 use std::{
     cell::RefCell,
+    fs::File,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -10,7 +11,8 @@ use std::{
 };
 
 use crossbeam_queue::ArrayQueue;
-use pcap::{Active, Capture, Device, Offline, Packet};
+use pcap::{Active, Capture, Device, Packet};
+use pcap_parser::{create_reader, traits::PcapReaderIterator, PcapBlockOwned, PcapError};
 
 use crate::api::{
     BufferDesc, Context, Flags as FlagsTrait, Metadata, MetadataType, Result, Socket, Token,
@@ -136,7 +138,7 @@ impl Context for PcapContext {
 
 enum PcapInner {
     Live(Capture<Active>),
-    Offline(Capture<Offline>),
+    Offline(Box<dyn PcapReaderIterator + Send>),
 }
 
 pub struct Sock {
@@ -151,10 +153,112 @@ impl Sock {
         cap.next_packet()
     }
 
-    fn next_packet_offline<'a>(
-        cap: &'a mut Capture<Offline>,
-    ) -> std::result::Result<Packet<'a>, pcap::Error> {
-        cap.next_packet()
+    fn next_packet_offline(
+        reader: &mut Box<dyn PcapReaderIterator + Send>,
+        buffer: &mut [u8],
+    ) -> std::result::Result<(u32, Meta), crate::errors::Error> {
+        loop {
+            match reader.next() {
+                Ok((offset, block)) => {
+                    match block {
+                        PcapBlockOwned::Legacy(packet) => {
+                            let len = packet.origlen;
+                            let caplen = packet.data.len() as u32;
+                            let copy_len = std::cmp::min(caplen as usize, buffer.len());
+                            buffer[..copy_len].copy_from_slice(&packet.data[..copy_len]);
+
+                            let meta = Meta {
+                                timestamp: libc::timeval {
+                                    tv_sec: packet.ts_sec as i64,
+                                    tv_usec: packet.ts_usec as i32,
+                                },
+                                len,
+                                caplen,
+                            };
+                            reader.consume(offset);
+                            return Ok((copy_len as u32, meta));
+                        }
+                        PcapBlockOwned::NG(block) => {
+                            match block {
+                                pcap_parser::Block::EnhancedPacket(packet) => {
+                                    let len = packet.origlen;
+                                    let caplen = packet.data.len() as u32;
+                                    let copy_len = std::cmp::min(caplen as usize, buffer.len());
+                                    buffer[..copy_len].copy_from_slice(&packet.data[..copy_len]);
+
+                                    let raw_ts = (packet.ts_high as u64) << 32 | (packet.ts_low as u64);
+                                    
+                                    // Try to determine if timestamp is microseconds or nanoseconds.
+                                    // Modern timestamps (e.g. 2024) in microseconds are ~1.7e15
+                                    // In nanoseconds they are ~1.7e18
+                                    // We use a threshold of 1e16 to distinguish.
+                                    let (tv_sec, tv_usec) = if raw_ts < 10_000_000_000_000_000 {
+                                        // Microseconds
+                                        ((raw_ts / 1_000_000) as i64, (raw_ts % 1_000_000) as i32)
+                                    } else {
+                                        // Nanoseconds
+                                        ((raw_ts / 1_000_000_000) as i64, ((raw_ts % 1_000_000_000) / 1000) as i32)
+                                    };
+
+                                    let meta = Meta {
+                                        timestamp: libc::timeval {
+                                            tv_sec,
+                                            tv_usec: tv_usec as _,
+                                        },
+                                        len,
+                                        caplen,
+                                    };
+                                    reader.consume(offset);
+                                    return Ok((copy_len as u32, meta));
+                                }
+                                pcap_parser::Block::SimplePacket(packet) => {
+                                    let len = packet.origlen;
+                                    let caplen = packet.data.len() as u32;
+                                    let copy_len = std::cmp::min(caplen as usize, buffer.len());
+                                    buffer[..copy_len].copy_from_slice(&packet.data[..copy_len]);
+
+                                    let meta = Meta {
+                                        timestamp: libc::timeval {
+                                            tv_sec: 0,
+                                            tv_usec: 0,
+                                        },
+                                        len,
+                                        caplen,
+                                    };
+                                    reader.consume(offset);
+                                    return Ok((copy_len as u32, meta));
+                                }
+                                _ => {
+                                    // Skip other blocks (headers, interfaces, stats)
+                                    reader.consume(offset);
+                                    continue;
+                                }
+                            }
+                        }
+                        PcapBlockOwned::LegacyHeader(_) => {
+                            reader.consume(offset);
+                            continue;
+                        }
+                    }
+                }
+                Err(PcapError::Eof) => {
+                    return Err(crate::errors::Error::Pcap(pcap::Error::NoMorePackets));
+                }
+                Err(PcapError::Incomplete(_)) => {
+                    reader.refill().map_err(|e| {
+                        crate::errors::Error::Pcap(pcap::Error::PcapError(format!("{:?}", e)))
+                    })?;
+                    continue;
+                }
+                Err(e) => {
+                    // Map pcap-parser error to something generic or print it
+                    eprintln!("Pcap parser error: {:?}", e);
+                    return Err(crate::errors::Error::Pcap(pcap::Error::PcapError(
+                        "Parser error".to_string(),
+                    )));
+                }
+            }
+        }
     }
 }
 
@@ -167,23 +271,7 @@ impl Socket for Sock {
         let ctx = &self.ctx;
         let mut inner = self.inner.borrow_mut();
 
-        // 1. Read packet from pcap
-        let pkt = match &mut *inner {
-            PcapInner::Live(cap) => Self::next_packet(cap).map_err(crate::errors::Error::from)?,
-            PcapInner::Offline(cap) => {
-                Self::next_packet_offline(cap).map_err(crate::errors::Error::from)?
-            }
-        };
-
-        let data = pkt.data;
-        let len = data.len();
-        let meta = Meta {
-            timestamp: pkt.header.ts,
-            len: pkt.header.len,
-            caplen: pkt.header.caplen,
-        };
-
-        // 2. Acquire a buffer from the pool (or allocate if empty)
+        // 1. Acquire a buffer from the pool (or allocate if empty)
         let ptr = if let Some(addr) = ctx.pool.pop() {
             addr as *mut u8
         } else {
@@ -192,17 +280,29 @@ impl Socket for Sock {
             Box::into_raw(buf) as *mut u8
         };
 
-        // 3. Copy packet data into the buffer
+        // 2. Read packet from pcap directly into buffer
         // SAFETY: We own the buffer `ptr`.
-        unsafe {
+        let (len, meta) = unsafe {
             let slice = std::slice::from_raw_parts_mut(ptr, ctx.buf_capacity);
-            let copy_len = std::cmp::min(len, ctx.buf_capacity);
-            slice[..copy_len].copy_from_slice(&data[..copy_len]);
-        }
+            match &mut *inner {
+                PcapInner::Live(cap) => {
+                    let pkt = Self::next_packet(cap).map_err(crate::errors::Error::from)?;
+                    let meta = Meta {
+                        timestamp: pkt.header.ts,
+                        len: pkt.header.len,
+                        caplen: pkt.header.caplen,
+                    };
+                    let copy_len = std::cmp::min(pkt.data.len(), slice.len());
+                    slice[..copy_len].copy_from_slice(&pkt.data[..copy_len]);
+                    (copy_len as u32, meta)
+                }
+                PcapInner::Offline(reader) => Self::next_packet_offline(reader, slice)?,
+            }
+        };
 
-        // 4. Create Token
+        // 3. Create Token
         let buf_desc = BufferDesc(ptr as usize);
-        let token = Token::new(buf_desc, ctx.pool_id(), len as u32);
+        let token = Token::new(buf_desc, ctx.pool_id(), len);
 
         Ok((token, meta))
     }
@@ -231,8 +331,17 @@ impl Socket for Sock {
 
         let inner = if is_file {
             let path = portspec.strip_prefix("file:").unwrap_or(portspec);
-            let cap = Capture::from_file(path).map_err(crate::errors::Error::from)?;
-            PcapInner::Offline(cap)
+            let file = File::open(path).map_err(|e| {
+                crate::errors::Error::Pcap(pcap::Error::PcapError(e.to_string()))
+            })?;
+
+            // Create reader using pcap-parser's autodetection.
+            // Requires pcap-parser >= 0.16.0 (or 0.17.0) to ensure Send trait on return type.
+            let reader = create_reader(1000000, file).map_err(|e| {
+                crate::errors::Error::Pcap(pcap::Error::PcapError(format!("{:?}", e)))
+            })?;
+
+            PcapInner::Offline(reader)
         } else {
             // Live device
             // Accept both a literal device name or "any".
