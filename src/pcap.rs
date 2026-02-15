@@ -3,9 +3,13 @@
 
 use std::{
     cell::RefCell,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
+use crossbeam_queue::ArrayQueue;
 use pcap::{Active, Capture, Device, Offline, Packet};
 
 use crate::api::{
@@ -74,14 +78,27 @@ static NEXT_POOL_ID: AtomicUsize = AtomicUsize::new(1);
 pub struct PcapContext {
     pool_id: u32,
     buf_capacity: usize,
+    // Thread-safe MPMC queue for buffer recycling.
+    // Stores raw pointers (as usize) to buffers.
+    pool: Arc<ArrayQueue<usize>>,
 }
 
 impl PcapContext {
-    fn new(buf_size: usize, _count: usize) -> Self {
+    fn new(buf_size: usize, buf_count: usize) -> Self {
         let pool_id = NEXT_POOL_ID.fetch_add(1, Ordering::Relaxed) as u32;
+        let pool = Arc::new(ArrayQueue::new(buf_count));
+
+        // Pre-allocate buffers
+        for _ in 0..buf_count {
+            let buf = vec![0u8; buf_size].into_boxed_slice();
+            let ptr = Box::into_raw(buf) as *mut u8 as usize;
+            let _ = pool.push(ptr);
+        }
+
         Self {
             pool_id,
             buf_capacity: buf_size,
+            pool,
         }
     }
 }
@@ -100,9 +117,17 @@ impl Context for PcapContext {
     }
 
     fn release(&self, buf_idx: BufferDesc) {
-        let ptr = usize::from(buf_idx) as *mut u8;
-        unsafe {
-            let _ = Box::from_raw(std::slice::from_raw_parts_mut(ptr, self.buf_capacity));
+        let ptr = usize::from(buf_idx);
+        // Try to return the buffer to the pool.
+        if let Err(returned_ptr) = self.pool.push(ptr) {
+            // If the pool is full (e.g., due to extra allocations during bursts),
+            // we must deallocate the buffer to avoid leaks.
+            unsafe {
+                let _ = Box::from_raw(std::slice::from_raw_parts_mut(
+                    returned_ptr as *mut u8,
+                    self.buf_capacity,
+                ));
+            }
         }
     }
 }
@@ -141,12 +166,15 @@ impl Socket for Sock {
     fn recv_token(&self) -> Result<(Token, Self::Metadata)> {
         let ctx = &self.ctx;
         let mut inner = self.inner.borrow_mut();
+
+        // 1. Read packet from pcap
         let pkt = match &mut *inner {
             PcapInner::Live(cap) => Self::next_packet(cap).map_err(crate::errors::Error::from)?,
             PcapInner::Offline(cap) => {
                 Self::next_packet_offline(cap).map_err(crate::errors::Error::from)?
             }
         };
+
         let data = pkt.data;
         let len = data.len();
         let meta = Meta {
@@ -155,11 +183,27 @@ impl Socket for Sock {
             caplen: pkt.header.caplen,
         };
 
-        let mut res = vec![0u8; ctx.buf_capacity].into_boxed_slice();
-        res[..len].copy_from_slice(data);
-        let ptr = Box::into_raw(res) as *mut u8;
+        // 2. Acquire a buffer from the pool (or allocate if empty)
+        let ptr = if let Some(addr) = ctx.pool.pop() {
+            addr as *mut u8
+        } else {
+            // Fallback: pool is empty, allocate a new buffer.
+            let buf = vec![0u8; ctx.buf_capacity].into_boxed_slice();
+            Box::into_raw(buf) as *mut u8
+        };
+
+        // 3. Copy packet data into the buffer
+        // SAFETY: We own the buffer `ptr`.
+        unsafe {
+            let slice = std::slice::from_raw_parts_mut(ptr, ctx.buf_capacity);
+            let copy_len = std::cmp::min(len, ctx.buf_capacity);
+            slice[..copy_len].copy_from_slice(&data[..copy_len]);
+        }
+
+        // 4. Create Token
         let buf_desc = BufferDesc(ptr as usize);
         let token = Token::new(buf_desc, ctx.pool_id(), len as u32);
+
         Ok((token, meta))
     }
 
