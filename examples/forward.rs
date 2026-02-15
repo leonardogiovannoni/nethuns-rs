@@ -11,9 +11,9 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
-use nethuns_rs::api::Socket;
 #[cfg(feature = "af-xdp")]
 use nethuns_rs::af_xdp;
+use nethuns_rs::api::Socket;
 #[cfg(feature = "netmap")]
 use nethuns_rs::netmap;
 #[cfg(feature = "pcap")]

@@ -2,9 +2,9 @@
 //!
 //! This receives packets and prints per-second counters, optionally per socket.
 use anyhow::{Result, bail};
-use nethuns_rs::api::{Flags, Socket, Token};
 use clap::{Parser, Subcommand};
 use etherparse::{NetHeaders, PacketHeaders};
+use nethuns_rs::api::{Flags, Socket, Token};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -259,8 +259,7 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
                             }
                             Some(())
                         })();
-                        if res.is_none() {
-                        }
+                        if res.is_none() {}
                     }
                 })
             };
@@ -290,8 +289,7 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
                             }
                             Some(())
                         })();
-                        if res.is_none() {
-                        }
+                        if res.is_none() {}
                     }
                 }
             }

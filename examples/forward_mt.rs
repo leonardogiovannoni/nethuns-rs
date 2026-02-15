@@ -8,8 +8,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use nethuns_rs::api::{Socket, Token};
 use ringbuf::{
-    traits::{Consumer, Producer, Split},
     HeapRb,
+    traits::{Consumer, Producer, Split},
 };
 use std::sync::{
     Arc,

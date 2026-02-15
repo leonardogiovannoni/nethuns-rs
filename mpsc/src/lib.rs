@@ -1,12 +1,13 @@
-#![feature(portable_simd)]
+#![cfg_attr(feature = "simd", feature(portable_simd))]
 
 mod spsc;
 mod consumer_registry;
+mod simd_type;
 
 use arrayvec::ArrayVec;
 use consumer_registry::{pop_all, ConsumerRegistry};
 use std::cell::UnsafeCell;
-use std::simd::Simd;
+use simd_type::SimdUsize16;
 use std::marker::PhantomData;
 use std::iter;
 
@@ -18,11 +19,13 @@ use std::sync::Arc;
 #[inline]
 #[cold]
 fn cold() {}
+
 #[inline]
 pub fn likely(b: bool) -> bool {
     if !b { cold() }
     b
 }
+
 #[inline]
 pub fn unlikely(b: bool) -> bool {
     if b { cold() }
@@ -31,7 +34,7 @@ pub fn unlikely(b: bool) -> bool {
 
 // This is a cached consumer
 pub struct Consumer<T> {
-    consumer: ConsumerRegistry<Simd<usize, 16>>,
+    consumer: ConsumerRegistry<SimdUsize16>,
     cached: ArrayVec<usize, 1024>,
     _marker: PhantomData<T>,
 }
@@ -47,6 +50,7 @@ impl<T> Consumer<T> {
     pub fn cached(&mut self) -> &mut ArrayVec<usize, 1024> {
         &mut self.cached
     }
+
     pub fn available_len(&self) -> usize {
         self.cached.len()
     }
@@ -59,8 +63,8 @@ impl<T> Consumer<T> {
 // ===== TLS per-thread + fast path =====
 
 struct PerThreadInner {
-    elem: spsc::Producer<Simd<usize, 16>>,
-    list: ConsumerRegistry<Simd<usize, 16>>,
+    elem: spsc::Producer<SimdUsize16>,
+    list: ConsumerRegistry<SimdUsize16>,
 }
 
 impl Drop for PerThreadInner {
@@ -72,13 +76,13 @@ impl Drop for PerThreadInner {
 // This is a cached producer
 pub struct Producer<T> {
     per_thread: Arc<ThreadLocal<UnsafeCell<Option<PerThreadInner>>>>,
-    list: ConsumerRegistry<Simd<usize, 16>>,
+    list: ConsumerRegistry<SimdUsize16>,
     local_batch: ArrayVec<usize, 16>,
     _marker: PhantomData<T>,
 }
 
 impl<T> Producer<T> {
-    fn new(list: ConsumerRegistry<Simd<usize, 16>>) -> Self {
+    fn new(list: ConsumerRegistry<SimdUsize16>) -> Self {
         Self {
             per_thread: Arc::new(ThreadLocal::new()),
             list,
@@ -87,14 +91,14 @@ impl<T> Producer<T> {
         }
     }
 
-    /// Fast path: accumula nel buffer locale (nessun accesso TLS).
-    /// Slow path: quando il buffer è pieno, crea/usa l'inner per-thread e drena in blocchi da 16.
+    /// Fast path: accumulate in local buffer (no TLS access).
+    /// Slow path: when buffer is full, create/use per-thread inner and drain in blocks of 16.
     #[inline(always)]
     pub fn push(&mut self, elem: impl Into<usize>) {
         let mut elem = elem.into();
         loop {
             if let Err(e) = self.local_batch.try_push(elem) {
-                // buffer pieno: flush
+                // Buffer full: flush
                 self.flush();
                 elem = e.element();
                 continue;
@@ -103,8 +107,8 @@ impl<T> Producer<T> {
         }
     }
 
-    /// Drena il buffer locale nell'SPSC del thread corrente.
-    /// Nota: come nel codice originale, solo gruppi completi da 16 vengono inviati.
+    /// Drain the local buffer into the current thread's SPSC.
+    /// Note: as in the original code, only complete groups of 16 are sent.
     #[inline(never)]
     #[cold]
     pub fn flush(&mut self) {
@@ -112,10 +116,10 @@ impl<T> Producer<T> {
             return;
         }
         let slot = self.per_thread.get_or_default();
-        // SAFETY: l'accesso a slot è esclusivo per questo thread
+        // SAFETY: slot access is exclusive to this thread
         let guard = unsafe { &mut *slot.get() };
         if unlikely(guard.is_none()) {
-            // Primo uso su *questo* thread: crea SPSC e registra un consumer
+            // First use on *this* thread: create SPSC and register a consumer
             let (p, c) = spsc::channel(self.list.single_spsc_len);
             self.list.push(c);
             *guard = Some(PerThreadInner {
@@ -123,11 +127,23 @@ impl<T> Producer<T> {
                 list: self.list.clone(),
             });
         }
-        // SAFETY: abbiamo appena inizializzato l'inner se non esisteva
+        // SAFETY: we just initialized the inner if it didn't exist
         let inner = unsafe { guard.as_mut().unwrap_unchecked() };
-        // Converte a blocchi da 16; eventuale resto <16 viene scartato (come prima)
-        let iter = to_simd(self.local_batch.drain(..));
-        let _ = inner.elem.enqueue_many(iter);
+
+        let val_opt = {
+            let mut iter = to_simd(self.local_batch.iter().cloned());
+            iter.next()
+        };
+
+        if let Some(val) = val_opt {
+            loop {
+                if inner.elem.enqueue_many(iter::once(val)) > 0 {
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+            self.local_batch.clear();
+        }
     }
 }
 
@@ -136,7 +152,7 @@ impl<T> Clone for Producer<T> {
         Self {
             per_thread: self.per_thread.clone(),
             list: self.list.clone(),
-            local_batch: ArrayVec::new(), // ogni handle ha il suo buffer fast-path
+            local_batch: ArrayVec::new(), // each handle has its own fast-path buffer
             _marker: PhantomData,
         }
     }
@@ -144,29 +160,31 @@ impl<T> Clone for Producer<T> {
 
 impl<T> Drop for Producer<T> {
     fn drop(&mut self) {
-        self.flush(); 
+        self.flush();
         // We are basically delaying real drop to the entry of the data structure to
-        // the destruction the of last global reference to the producer (i.e., when `per_thread`
+        // the destruction of the last global reference to the producer (i.e., when `per_thread`
         // arc count goes to zero).
     }
 }
 
-fn to_simd<I: Iterator<Item = usize>>(mut iter: I) -> impl Iterator<Item = Simd<usize, 16>> {
+
+
+fn to_simd<I: Iterator<Item = usize>>(mut iter: I) -> impl Iterator<Item = SimdUsize16> {
     iter::from_fn(move || {
         let mut values = [0; 16];
         for slot in values.iter_mut() {
             if let Some(val) = iter.next() {
                 *slot = val;
             } else {
-                return None; // produce solo gruppi completi da 16
+                return None; // produce only complete groups of 16
             }
         }
-        Some(Simd::from_array(values))
+        Some(simd_type::from_array(values))
     })
 }
 
-// Non creiamo una SPSC al momento della creazione del canale:
-// le SPSC vengono create p-thread al primo flush().
+// We don't create a SPSC at channel creation time:
+// SPSCs are created per-thread at first flush().
 pub fn channel<T>(size: usize) -> (Producer<T>, Consumer<T>) {
     let list = ConsumerRegistry::new(size);
     (
@@ -182,9 +200,10 @@ pub fn channel<T>(size: usize) -> (Producer<T>, Consumer<T>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_tls_fastpath() {
-        const LEN: usize = 1024 * 1024 * 4; // multiplo di 16
+        const LEN: usize = 1024 * 1024 * 4; // multiple of 16
         let (producer, mut consumer) = channel::<usize>(LEN);
         let threads = num_cpus::get();
         let mut handles = Vec::new();
@@ -201,7 +220,7 @@ mod tests {
             handles.push(handle);
         }
 
-        // drain best-effort (ordine non garantito)
+        // Drain best-effort (order not guaranteed)
         let mut got = 0usize;
         let expected = threads * LEN;
         while got < expected {

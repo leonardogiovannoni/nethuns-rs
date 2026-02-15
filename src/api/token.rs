@@ -7,7 +7,7 @@ use super::buffer::BufferDesc;
 use super::context::Context;
 
 /// A token representing ownership of a packet buffer.
-/// 
+///
 /// The token must be consumed (via [`Token::consume`]) or released back to the pool.
 /// Dropping a token without consuming it will panic in debug builds.
 pub struct Token {
@@ -53,7 +53,7 @@ impl Token {
 }
 
 /// A smart pointer to packet data that automatically releases the buffer on drop.
-/// 
+///
 /// `Payload` implements [`Deref`] and [`DerefMut`] to provide access to the underlying
 /// packet bytes as a `[u8]` slice.
 #[repr(C)]
@@ -72,7 +72,7 @@ impl<'ctx, Ctx: Context> Payload<'ctx, Ctx> {
     }
 
     /// Converts this payload back into a token without releasing the buffer.
-    /// 
+    ///
     /// This is useful when you need to transfer ownership to another context.
     pub fn into_token(self) -> Token {
         let mut me = ManuallyDrop::new(self);

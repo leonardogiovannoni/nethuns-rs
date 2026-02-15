@@ -3,6 +3,11 @@ name = "mpsc"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# SIMD feature using std::simd (requires nightly Rust)
+# Disabled by default for stable compatibility
+simd = []
+
 [dependencies]
 #arrayvec = "0.7.6"
 arrayvec = {path = "arrayvec"}

@@ -3,18 +3,18 @@
 //! This variant exercises recv_token/packet handling by round-robining
 //! payloads across cloned contexts.
 use anyhow::{Result, bail};
-use nethuns_rs::api::{Flags, Socket, Token};
 use clap::{Parser, Subcommand};
 use etherparse::{NetHeaders, PacketHeaders};
+use nethuns_rs::api::{Flags, Socket, Token};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use nethuns_rs::api::Context;
 #[cfg(feature = "af-xdp")]
 use nethuns_rs::af_xdp;
+use nethuns_rs::api::Context;
 #[cfg(feature = "dpdk")]
 use nethuns_rs::dpdk;
 #[cfg(feature = "netmap")]
@@ -263,8 +263,7 @@ fn run<Sock: Socket + 'static>(flags: Sock::Flags, args: &Args) -> Result<()> {
                         j = (j + 1) % ctxs.len();
                         Ok(())
                     })();
-                    if res.is_err() {
-                    }
+                    if res.is_err() {}
                 }
             }
         }

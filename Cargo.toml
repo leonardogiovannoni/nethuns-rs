@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = { version = "1.0.95", features = ["backtrace"] }
 clap = { version = "4.5.31", features = ["derive"] }
 ctrlc = "3.4.5"
+crossbeam-queue = "0.3.11"
 etherparse = "0.17.0"
 eui48 = "1.1.0"
 libc = "0.2.169"
@@ -14,7 +15,7 @@ netmap-rs = { path = "netmap_rs", optional = true }
 #netmap-sys = { path = "../netmap-rs/netmap-sys" }
 nix = "0.29.0"
 num_cpus = "1.16.0"
-mpsc = { path = "mpsc" }
+mpsc = { path = "mpsc", default-features = false }
 libxdp-sys = { path = "libxdp-sys", optional = true }
 ringbuf = "0.4.7"
 dpdk-sys = { path = "dpdk-sys", optional = true }
@@ -27,6 +28,7 @@ thiserror = "2.0.12"
 triomphe = "0.1.14"
 flume = "0.11.1"
 pcap = { version = "2.3.0", optional = true }
+pcap-parser = { version = "0.17.0", optional = true }
 
 #libxdp-sys = { path = "libxdp-sys" }
 
@@ -37,6 +39,8 @@ panic = "abort"
 lto = "fat"
 debug = true
 panic = "abort"
+codegen-units = 1
+opt-level = 3
 debug-assertions = false
 
 [features]
@@ -44,7 +48,8 @@ default = ["pcap"]
 af-xdp = ["dep:aya", "dep:libbpf-sys", "dep:libxdp-sys"]
 dpdk = ["dep:dpdk-sys"]
 netmap = ["dep:netmap-rs"]
-pcap = ["dep:pcap"]
+pcap = ["dep:pcap", "dep:pcap-parser"]
+simd = ["mpsc/simd"]
 
 
 
@@ -62,3 +67,6 @@ name = "forward_mt"
 
 [[example]]
 name = "pkt-gen"
+
+[[example]]
+name = "bench_queue"

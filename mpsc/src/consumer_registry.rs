@@ -1,11 +1,10 @@
-use std::simd::usizex16;
-
 use triomphe::Arc;
 
 use arrayvec::ArrayVec;
 use parking_lot::Mutex;
 
 use crate::spsc;
+use crate::simd_type::SimdUsize16;
 
 // INVARIANTS:
 // - Each consumer can only be used by one thread
@@ -63,7 +62,7 @@ impl<T> ConsumerRegistry<T> {
 
 #[inline(never)]
 #[cold]
-pub fn pop_all<const N: usize>(registry: &ConsumerRegistry<usizex16>, v: &mut ArrayVec<usize, { N }>) {
+pub fn pop_all<const N: usize>(registry: &ConsumerRegistry<SimdUsize16>, v: &mut ArrayVec<usize, { N }>) {
     registry.for_each(|consumer| {
         let consumer = unsafe { &mut *consumer.consumer.get() };
         let remaining = (v.capacity() - v.len()) / 16;
@@ -71,7 +70,7 @@ pub fn pop_all<const N: usize>(registry: &ConsumerRegistry<usizex16>, v: &mut Ar
             unsafe {
                 let len = v.len();
                 let ptr = v.as_mut_ptr().add(len);
-                let ptr = ptr as *mut usizex16;
+                let ptr = ptr as *mut SimdUsize16;
                 std::ptr::write(ptr, scan);
                 v.set_len(len + 16);
             }

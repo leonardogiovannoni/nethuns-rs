@@ -1,5 +1,5 @@
-use crate::api::{Result, Token};
 use crate::api::{self, Context};
+use crate::api::{Result, Token};
 use crate::errors::Error;
 use netmap_rs::context::{BufferPool, Port, Receiver, RxBuf, Transmitter, TxBuf};
 use nix::sys::time::TimeVal;
@@ -40,7 +40,7 @@ impl Ctx {
 }
 
 impl api::Context for Ctx {
-   // type Token = Tok;
+    // type Token = Tok;
     fn release(&self, token: api::BufferDesc) {
         let mut producer_mut = unsafe { self.producer.borrow_mut() };
         producer_mut.push(token);

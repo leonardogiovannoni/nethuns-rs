@@ -1,7 +1,7 @@
 //! Buffer descriptors and references for zero-copy packet handling.
 
 /// Opaque descriptor representing a buffer in a memory pool.
-/// 
+///
 /// This is typically an offset or index into a UMEM region or similar.
 #[derive(Clone, Copy, Debug)]
 pub struct BufferDesc(pub(crate) usize);

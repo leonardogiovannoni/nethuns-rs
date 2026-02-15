@@ -15,9 +15,9 @@
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use etherparse::PacketBuilder;
-use nethuns_rs::api::Socket;
 #[cfg(feature = "af-xdp")]
 use nethuns_rs::af_xdp;
+use nethuns_rs::api::Socket;
 #[cfg(feature = "dpdk")]
 use nethuns_rs::dpdk;
 #[cfg(feature = "netmap")]
